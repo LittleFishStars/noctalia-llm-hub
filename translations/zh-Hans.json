@@ -1,0 +1,171 @@
+{
+  "plugin": {
+    "name": "大模型控制中心",
+    "description": "把任意数量的模型 API 聚合成一个本地端点，按规则自动路由，供本地应用直接调用"
+  },
+  "settings": {
+    "autostart": {
+      "label": "随 Noctalia 自动启动网关",
+      "description": "插件加载后自动拉起本地网关守护进程"
+    },
+    "stop_on_exit": {
+      "label": "退出时停止网关",
+      "description": "Noctalia 关闭或插件停用时停止守护进程"
+    },
+    "port": {
+      "label": "监听端口",
+      "description": "本地网关端口，被占用时会自动向后寻找可用端口"
+    },
+    "host": {
+      "label": "监听地址",
+      "description": "默认只监听回环地址，本地应用才能访问；填 0.0.0.0 会暴露到局域网"
+    },
+    "api_key": {
+      "label": "本地访问密钥",
+      "description": "本地应用调用网关时需要携带的密钥，留空表示不校验"
+    },
+    "config_path": {
+      "label": "配置文件路径",
+      "description": "留空使用默认位置 ~/.config/llm-hub/config.json"
+    },
+    "poll_interval_ms": {
+      "label": "状态刷新间隔（毫秒）",
+      "description": "栏图标与控制台读取网关状态的频率"
+    },
+    "glyph": {
+      "label": "图标",
+      "description": "栏上显示的图标名（Tabler 图标，如 router、server、brain）"
+    },
+    "show_text": {
+      "label": "显示文字",
+      "description": "在栏图标旁显示请求数等文字"
+    },
+    "show_requests": {
+      "label": "显示请求数",
+      "description": "文字里包含累计请求数"
+    },
+    "show_latency": {
+      "label": "显示延迟",
+      "description": "文字里包含平均延迟"
+    }
+  },
+  "bar": {
+    "state": "状态",
+    "running": "运行中",
+    "stopped": "已停止",
+    "unknown": "未知",
+    "endpoint": "端点",
+    "uptime": "运行时长",
+    "providers": "Provider",
+    "requests": "请求",
+    "tokens": "Tokens",
+    "cost": "成本",
+    "hint": "左键打开控制台，右键复制端点",
+    "hint_body": "本地应用把 Base URL 指向该端点，模型名可以与任何已接入的模型一致",
+    "copied": "已复制端点：{endpoint}"
+  },
+  "stats": {
+    "errors_n": "{count} 个错误"
+  },
+  "shortcut": {
+    "on": "网关运行中 · 点击停止",
+    "off": "网关已停止 · 点击启动",
+    "starting": "正在启动网关…",
+    "stopping": "正在停止网关…"
+  },
+  "panel": {
+    "title": "大模型控制中心",
+    "running": "运行中",
+    "stopped": "已停止",
+    "not_running": "网关未运行。点「启动网关」，或打开设置接入你的模型 API。",
+    "start": "启动网关",
+    "stop": "停止网关",
+    "restart": "重启",
+    "reload_config": "重载配置",
+    "clear_logs": "清空日志",
+    "reset_stats": "重置统计",
+    "copy_endpoint": "复制端点",
+    "copied_endpoint": "已复制端点：{endpoint}",
+    "open_settings": "插件设置",
+    "busy": "正在执行「{label}」…",
+    "done": "「{label}」完成",
+    "failed": "「{label}」失败：{detail}",
+    "tile": {
+      "requests": "累计请求",
+      "errors": "失败请求",
+      "tokens": "Tokens",
+      "cost": "估算成本"
+    },
+    "unit": {
+      "providers": "个 provider",
+      "models": " 个模型"
+    },
+    "tab": {
+      "overview": "概览",
+      "providers": "Provider",
+      "rules": "路由规则",
+      "ask": "问答",
+      "logs": "日志"
+    },
+    "overview": {
+      "runtime": "运行信息",
+      "endpoint": "本地端点",
+      "uptime": "运行时长",
+      "providers": "启用 / 全部",
+      "config": "配置文件",
+      "config_default": "默认位置",
+      "datadir": "数据目录",
+      "version": "网关版本",
+      "auth": "本地鉴权",
+      "auth_on": "已开启",
+      "auth_off": "未开启",
+      "rules": "规则概览"
+    },
+    "providers": {
+      "title": "Provider（{count}）",
+      "empty": "还没有配置任何 provider。编辑配置文件后点「重载配置」。",
+      "on": "已启用",
+      "off": "已停用",
+      "enable": "启用",
+      "disable": "停用",
+      "missing_env": "缺少环境变量",
+      "no_key": "未填密钥",
+      "test": "连通性测试",
+      "test_fail": "无法连接",
+      "test_result": "测试结果 · {id}"
+    },
+    "rules": {
+      "title": "路由规则",
+      "when": "触发条件",
+      "always": "始终",
+      "aliases": "模型别名",
+      "scenarios": "场景端点",
+      "default": "默认路由（无规则命中时）",
+      "fallback_on": "失败自动降级到下一个候选"
+    },
+    "ask": {
+      "title": "直接问一句",
+      "placeholder": "输入问题，回车发送（走真实路由）",
+      "send": "发送",
+      "thinking": "正在请求模型…",
+      "copy": "复制",
+      "copied": "已复制回答",
+      "failed": "请求失败",
+      "no_response": "没有拿到回答"
+    },
+    "route": {
+      "title": "路由干跑",
+      "placeholder": "模型名，如 gpt-4o-mini 或 fast",
+      "run": "试算",
+      "hint": "填模型名（支持别名、通配符 *）试算命中哪条规则、落到哪个 provider",
+      "running": "正在试算…",
+      "failed": "试算失败",
+      "none": "没有可用候选"
+    },
+    "logs": {
+      "title": "最近请求（{count}）",
+      "empty": "暂无请求记录",
+      "loading": "正在读取日志…"
+    }
+  }
+}

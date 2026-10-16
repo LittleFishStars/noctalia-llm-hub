@@ -1,0 +1,141 @@
+# ylxc/llm-hub —— 大模型控制中心
+# 一个本地网关：把任意数量的大模型 API 接进来，按配置文件里的规则自动路由，
+# 再暴露成 OpenAI / Anthropic / Responses 三种兼容接口给本地应用调用。
+#
+# 目录结构：
+#   plugin.toml            本清单
+#   service.luau           后台服务：守护进程生命周期 + 共享状态轮询
+#   bar.luau               栏图标：运行状态与用量概览
+#   panel.luau             控制台面板：provider / 规则 / 统计 / 快速问答
+#   shortcut.luau          控制中心磁贴：一键启停
+#   lib/hub.luau           与守护进程交互的共享模块
+#   bin/llmhub             本地命令行接口（给终端/脚本用）
+#   daemon/*.py            网关本体（Python 标准库，无第三方依赖）
+#   tests/smoke_test.py    端到端冒烟测试（mock provider，无需密钥）
+
+id = "ylxc/llm-hub"
+name = "LLM Hub"
+name_key = "plugin.name"
+version = "1.0.0"
+plugin_api = 26
+author = "ylxc"
+license = "MIT"
+icon = "router"
+description = "大模型控制中心：多 provider 接入、规则路由、本地 OpenAI/Anthropic 兼容接口。"
+description_key = "plugin.description"
+tags = ["ai", "llm", "gateway", "network"]
+dependencies = []
+
+# ── 插件级设置：Settings → Plugins → LLM Hub ────────────────────────────────
+# 这些键在代码里用 noctalia.getConfig(key) 读取（已 seeded 到每个入口）。
+
+[[setting]]
+key = "autostart"
+type = "bool"
+label_key = "settings.autostart.label"
+description_key = "settings.autostart.description"
+default = true
+
+[[setting]]
+key = "stop_on_exit"
+type = "bool"
+label_key = "settings.stop_on_exit.label"
+description_key = "settings.stop_on_exit.description"
+default = true
+
+[[setting]]
+key = "port"
+type = "int"
+label_key = "settings.port.label"
+description_key = "settings.port.description"
+default = 8787
+min = 1024
+max = 65535
+
+[[setting]]
+key = "host"
+type = "string"
+label_key = "settings.host.label"
+description_key = "settings.host.description"
+default = "127.0.0.1"
+
+[[setting]]
+key = "api_key"
+type = "string"
+label_key = "settings.api_key.label"
+description_key = "settings.api_key.description"
+default = ""
+
+[[setting]]
+key = "config_path"
+type = "string"
+label_key = "settings.config_path.label"
+description_key = "settings.config_path.description"
+default = ""
+
+[[setting]]
+key = "poll_interval_ms"
+type = "int"
+label_key = "settings.poll_interval_ms.label"
+description_key = "settings.poll_interval_ms.description"
+default = 4000
+min = 1000
+max = 120000
+
+# ── 栏图标 ───────────────────────────────────────────────────────────────────
+
+[[widget]]
+id = "status"
+entry = "bar.luau"
+
+  [[widget.setting]]
+  key = "glyph"
+  type = "glyph"
+  label_key = "settings.glyph.label"
+  default = "router"
+
+  [[widget.setting]]
+  key = "show_text"
+  type = "bool"
+  label_key = "settings.show_text.label"
+  default = true
+
+  [[widget.setting]]
+  key = "show_requests"
+  type = "bool"
+  label_key = "settings.show_requests.label"
+  default = true
+
+  [[widget.setting]]
+  key = "show_latency"
+  type = "bool"
+  label_key = "settings.show_latency.label"
+  default = false
+
+# 左键打开控制台，中键交还给宿主（默认是「打开该组件的设置」）
+  [widget.actions]
+  left = "panel-toggle ylxc/llm-hub:console"
+  middle = "settings-open-widget"
+  right = "none"
+
+# ── 控制台面板 ───────────────────────────────────────────────────────────────
+
+[[panel]]
+id = "console"
+entry = "panel.luau"
+width = 640
+height = 580
+placement = "floating"
+position = "center"
+
+# ── 控制中心磁贴：一键启停网关 ───────────────────────────────────────────────
+
+[[shortcut]]
+id = "toggle"
+entry = "shortcut.luau"
+
+# ── 后台服务：拉起/守护网关进程，并把状态写进插件共享状态 ────────────────────
+
+[[service]]
+id = "hub"
+entry = "service.luau"

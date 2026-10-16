@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""llmhub —— 大模型控制中心命令行入口。
+
+直接转发到 daemon/llmhubd.py，所以插件目录在哪都无需安装即可使用：
+
+    ./bin/llmhub status
+    ./bin/llmhub start
+    ./bin/llmhub ask "你好" -m fast
+    ./bin/llmhub serve --foreground
+
+也可以软链到 PATH 里：
+
+    ln -s "$(pwd)/bin/llmhub" ~/.local/bin/llmhub
+"""
+
+import os
+import runpy
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+ENTRY = os.path.join(ROOT, "daemon", "llmhubd.py")
+
+
+def main() -> int:
+    if not os.path.isfile(ENTRY):
+        sys.stderr.write(f"找不到网关入口：{ENTRY}\n")
+        return 2
+    sys.path.insert(0, os.path.join(ROOT, "daemon"))
+    sys.argv[0] = ENTRY
+    try:
+        runpy.run_path(ENTRY, run_name="__main__")
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

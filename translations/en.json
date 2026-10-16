@@ -1,0 +1,171 @@
+{
+  "plugin": {
+    "name": "LLM Hub",
+    "description": "Aggregate any number of model APIs behind one local endpoint, route by rules, and call it from local apps"
+  },
+  "settings": {
+    "autostart": {
+      "label": "Start gateway with Noctalia",
+      "description": "Launch the local gateway daemon as soon as the plugin loads"
+    },
+    "stop_on_exit": {
+      "label": "Stop gateway on exit",
+      "description": "Stop the daemon when Noctalia shuts down or the plugin is disabled"
+    },
+    "port": {
+      "label": "Listen port",
+      "description": "Gateway port; if it is taken, the next free port is used"
+    },
+    "host": {
+      "label": "Listen address",
+      "description": "Loopback only by default so local apps can reach it; 0.0.0.0 exposes it to your LAN"
+    },
+    "api_key": {
+      "label": "Local access key",
+      "description": "Key local apps must send; leave empty to disable checking"
+    },
+    "config_path": {
+      "label": "Config file path",
+      "description": "Empty uses the default ~/.config/llm-hub/config.json"
+    },
+    "poll_interval_ms": {
+      "label": "Refresh interval (ms)",
+      "description": "How often the bar widget and console read gateway status"
+    },
+    "glyph": {
+      "label": "Glyph",
+      "description": "Tabler icon shown in the bar, e.g. router, server, brain"
+    },
+    "show_text": {
+      "label": "Show text",
+      "description": "Show request counts next to the bar glyph"
+    },
+    "show_requests": {
+      "label": "Show requests",
+      "description": "Include the total request count in the text"
+    },
+    "show_latency": {
+      "label": "Show latency",
+      "description": "Include the average latency in the text"
+    }
+  },
+  "bar": {
+    "state": "Status",
+    "running": "Running",
+    "stopped": "Stopped",
+    "unknown": "Unknown",
+    "endpoint": "Endpoint",
+    "uptime": "Uptime",
+    "providers": "Providers",
+    "requests": "Requests",
+    "tokens": "Tokens",
+    "cost": "Cost",
+    "hint": "Left click opens the console, right click copies the endpoint",
+    "hint_body": "Point your local app's base URL at this endpoint; any routed model name works",
+    "copied": "Endpoint copied: {endpoint}"
+  },
+  "stats": {
+    "errors_n": "{count} errors"
+  },
+  "shortcut": {
+    "on": "Gateway running · click to stop",
+    "off": "Gateway stopped · click to start",
+    "starting": "Starting gateway…",
+    "stopping": "Stopping gateway…"
+  },
+  "panel": {
+    "title": "LLM Hub",
+    "running": "Running",
+    "stopped": "Stopped",
+    "not_running": "The gateway is not running. Start it, or open settings to add your model APIs.",
+    "start": "Start gateway",
+    "stop": "Stop gateway",
+    "restart": "Restart",
+    "reload_config": "Reload config",
+    "clear_logs": "Clear logs",
+    "reset_stats": "Reset stats",
+    "copy_endpoint": "Copy endpoint",
+    "copied_endpoint": "Endpoint copied: {endpoint}",
+    "open_settings": "Plugin settings",
+    "busy": "Running “{label}”…",
+    "done": "“{label}” finished",
+    "failed": "“{label}” failed: {detail}",
+    "tile": {
+      "requests": "Requests",
+      "errors": "Failures",
+      "tokens": "Tokens",
+      "cost": "Est. cost"
+    },
+    "unit": {
+      "providers": " providers",
+      "models": " models"
+    },
+    "tab": {
+      "overview": "Overview",
+      "providers": "Providers",
+      "rules": "Routing",
+      "ask": "Ask",
+      "logs": "Logs"
+    },
+    "overview": {
+      "runtime": "Runtime",
+      "endpoint": "Local endpoint",
+      "uptime": "Uptime",
+      "providers": "Enabled / all",
+      "config": "Config file",
+      "config_default": "default location",
+      "datadir": "Data dir",
+      "version": "Gateway version",
+      "auth": "Local auth",
+      "auth_on": "enabled",
+      "auth_off": "disabled",
+      "rules": "Rule summary"
+    },
+    "providers": {
+      "title": "Providers ({count})",
+      "empty": "No providers configured yet. Edit the config file, then hit Reload config.",
+      "on": "enabled",
+      "off": "disabled",
+      "enable": "Enable",
+      "disable": "Disable",
+      "missing_env": "missing env",
+      "no_key": "no key",
+      "test": "Connectivity test",
+      "test_fail": "unreachable",
+      "test_result": "Test result · {id}"
+    },
+    "rules": {
+      "title": "Routing rules",
+      "when": "When",
+      "always": "always",
+      "aliases": "Model aliases",
+      "scenarios": "Scenario endpoints",
+      "default": "Default route (no rule matched)",
+      "fallback_on": "falls back to the next candidate on failure"
+    },
+    "ask": {
+      "title": "Quick ask",
+      "placeholder": "Type a question, Enter to send (uses real routing)",
+      "send": "Send",
+      "thinking": "Waiting for the model…",
+      "copy": "Copy",
+      "copied": "Answer copied",
+      "failed": "Request failed",
+      "no_response": "No answer received"
+    },
+    "route": {
+      "title": "Route dry run",
+      "placeholder": "model name, e.g. gpt-4o-mini or fast",
+      "run": "Dry run",
+      "hint": "Enter a model name (aliases and * wildcards work) to see the matched rule and provider",
+      "running": "Resolving…",
+      "failed": "Dry run failed",
+      "none": "no candidate available"
+    },
+    "logs": {
+      "title": "Recent requests ({count})",
+      "empty": "No requests logged yet",
+      "loading": "Loading logs…"
+    }
+  }
+}
