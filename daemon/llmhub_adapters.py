@@ -502,6 +502,7 @@ class OpenAIAdapter(BaseAdapter):
             id=str(data.get("id") or new_id()),
             model=str(data.get("model") or model),
             text=msg.get("content") or "",
+            reasoning=msg.get("reasoning_content") or msg.get("reasoning") or "",
             tool_calls=tool_calls,
             finish_reason=str(choice.get("finish_reason") or "stop"),
             prompt_tokens=int(usage.get("prompt_tokens") or 0),
@@ -593,11 +594,13 @@ class AnthropicAdapter(BaseAdapter):
 
     def parse(self, body: bytes, req, provider, model) -> CanonResponse:
         data = json.loads(body.decode("utf-8", "replace") or "{}")
-        text_parts, tool_calls = [], []
+        text_parts, think_parts, tool_calls = [], [], []
         for block in data.get("content") or []:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "text":
+            if block.get("type") == "thinking":
+                think_parts.append(block.get("thinking", ""))
+            elif block.get("type") == "text":
                 text_parts.append(block.get("text", ""))
             elif block.get("type") == "tool_use":
                 tool_calls.append({"id": block.get("id") or new_id("toolu"),
@@ -609,6 +612,7 @@ class AnthropicAdapter(BaseAdapter):
             id=str(data.get("id") or new_id("msg")),
             model=str(data.get("model") or model),
             text="".join(text_parts),
+            reasoning="".join(think_parts),
             tool_calls=tool_calls,
             finish_reason=str(data.get("stop_reason") or "end_turn"),
             prompt_tokens=int(usage.get("input_tokens") or 0),
@@ -721,11 +725,14 @@ class GeminiAdapter(BaseAdapter):
 
     def parse(self, body: bytes, req, provider, model) -> CanonResponse:
         data = json.loads(body.decode("utf-8", "replace") or "{}")
-        text, tool_calls = "", []
+        text, think, tool_calls = "", "", []
         finish = "stop"
         for cand in data.get("candidates") or []:
             for part in ((cand.get("content") or {}).get("parts") or []):
                 if isinstance(part, dict):
+                    if part.get("thought"):          # Gemini 用 thought=true 标记思考片段
+                        think += part.get("text") or ""
+                        continue
                     text += part.get("text") or ""
                     if part.get("functionCall"):
                         fc = part["functionCall"]
@@ -735,8 +742,8 @@ class GeminiAdapter(BaseAdapter):
             if cand.get("finishReason"):
                 finish = str(cand["finishReason"]).lower()
         um = data.get("usageMetadata") or {}
-        return CanonResponse(id=new_id("gemini"), model=model, text=text, tool_calls=tool_calls,
-                             finish_reason=finish,
+        return CanonResponse(id=new_id("gemini"), model=model, text=text, reasoning=think,
+                             tool_calls=tool_calls, finish_reason=finish,
                              prompt_tokens=int(um.get("promptTokenCount") or 0),
                              completion_tokens=int(um.get("candidatesTokenCount") or 0),
                              raw=data)

@@ -16,7 +16,7 @@
 id = "ylxc/llm-hub"
 name = "LLM Hub"
 name_key = "plugin.name"
-version = "1.1.0"
+version = "1.2.0"
 plugin_api = 26
 author = "ylxc"
 license = "MIT"
@@ -123,8 +123,8 @@ entry = "bar.luau"
 [[panel]]
 id = "console"
 entry = "panel.luau"
-width = 640
-height = 580
+width = 660
+height = 800
 placement = "floating"
 position = "center"
 

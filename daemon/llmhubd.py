@@ -750,11 +750,17 @@ def cmd_config(args) -> int:
     cfg = store.snapshot()
     redacted = json.loads(json.dumps(cfg))
     for p in redacted.get("providers") or []:
+        p["has_key"] = bool(p.get("api_key"))    # 打码前记下是否已配置密钥，供面板显示
         if p.get("api_key"):
             p["api_key"] = "***"
         for k in list((p.get("headers") or {}).keys()):
             if any(t in k.lower() for t in ("auth", "key", "token")):
                 p["headers"][k] = "***"
+        # 内部字段不下发；把 _missing_env 暴露成面板/本地应用用的 missing_env
+        miss = p.pop("_missing_env", None) or []
+        for k in [k for k in list(p.keys()) if k.startswith("_")]:
+            p.pop(k, None)
+        p["missing_env"] = miss
     srv = redacted.get("server")
     if isinstance(srv, dict) and srv.get("api_key"):
         srv["api_key"] = "***"

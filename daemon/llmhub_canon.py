@@ -108,6 +108,7 @@ class CanonResponse:
     id: str = ""
     model: str = ""
     text: str = ""
+    reasoning: str = ""          # 上游思考内容（deepseek reasoning_content / anthropic thinking）
     tool_calls: list[dict] = field(default_factory=list)
     finish_reason: str = "stop"
     prompt_tokens: int = 0
@@ -430,6 +431,9 @@ PARSERS = {
 
 def to_openai_response(resp: CanonResponse, req: CanonRequest) -> dict:
     message: dict = {"role": "assistant", "content": resp.text or None}
+    if resp.reasoning:
+        # DeepSeek 等推理模型：思考内容原样透出，客户端（Cherry Studio / LobeChat 等）会单独展示
+        message["reasoning_content"] = resp.reasoning
     if resp.tool_calls:
         message["tool_calls"] = [
             {
@@ -482,6 +486,9 @@ def _openai_finish(reason: str, resp: CanonResponse) -> str:
 
 def to_anthropic_response(resp: CanonResponse, req: CanonRequest) -> dict:
     content: list[dict] = []
+    if resp.reasoning:
+        # Anthropic 协议用 thinking 块承载上游的思考内容
+        content.append({"type": "thinking", "thinking": resp.reasoning})
     if resp.text:
         content.append({"type": "text", "text": resp.text})
     for tc in resp.tool_calls:
@@ -590,6 +597,9 @@ class StreamWriter:
         self.sent_role = False
         self.block_open = False          # anthropic 文本块是否已开
         self.block_index = 0
+        self.think_open = False          # anthropic 思考块是否已开
+        self.think_index = 0
+        self.think_buf = ""              # 思考文本（responses 协议需要汇总）
         self.tool_buf: dict[int, dict] = {}
         self.prompt_tokens = req.approx_prompt_tokens
         self.completion_tokens = 0
@@ -620,6 +630,42 @@ class StreamWriter:
             return self._tool_start(ev)
         if t == "tool_args":
             return self._tool_args(ev)
+        if t == "reasoning":
+            return self._reasoning(ev.get("text", ""))
+        return []
+
+    # -- 思考内容（deepseek reasoning_content / anthropic thinking）--
+    def _reasoning(self, text: str) -> list[bytes]:
+        if not text:
+            return []
+        self.think_buf += text
+        if self.protocol == "openai":
+            out = []
+            if not self.sent_role:
+                self.sent_role = True
+                out.append(self._openai_chunk({"role": "assistant", "content": ""}))
+            out.append(self._openai_chunk({"reasoning_content": text}))
+            return out
+        if self.protocol == "anthropic":
+            out = []
+            if not self.sent_role:
+                out.append(self._anthropic_start())
+            if self.block_open:                     # 正文开始后才出现的思考：先收尾文本块
+                out.append(self.sse({"type": "content_block_stop", "index": self.block_index},
+                                    event="content_block_stop"))
+                self.block_open = False
+                self.block_index += 1
+            if not self.think_open:
+                self.think_open = True
+                self.think_index = self.block_index
+                out.append(self.sse({"type": "content_block_start", "index": self.think_index,
+                                     "content_block": {"type": "thinking", "thinking": ""}},
+                                    event="content_block_start"))
+            out.append(self.sse({"type": "content_block_delta", "index": self.think_index,
+                                 "delta": {"type": "thinking_delta", "thinking": text}},
+                                event="content_block_delta"))
+            return out
+        # responses：思考不单独成块，只在最终汇总里带上
         return []
 
     # -- openai --
@@ -747,6 +793,9 @@ class StreamWriter:
                 out.append(self._anthropic_start())
             if self.block_open:
                 out.append(self.sse({"type": "content_block_stop", "index": self.block_index},
+                                    event="content_block_stop"))
+            if self.think_open:
+                out.append(self.sse({"type": "content_block_stop", "index": self.think_index},
                                     event="content_block_stop"))
             for idx, buf in self.tool_buf.items():
                 out.append(self.sse({"type": "content_block_stop",

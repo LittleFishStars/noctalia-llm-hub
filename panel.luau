@@ -9,6 +9,7 @@ local hub = require("./lib/hub.luau")
 local view = {
     snap = nil,
     tab = "overview",
+    editing = nil,       -- 正在编辑的 provider id；nil = 列表视图（整页只放一张卡片，无需滚动）
     logs = nil,
     logsBusy = false,
     note = nil,          -- 最近一次动作的结果提示
@@ -297,12 +298,19 @@ local function addProvider()
     hub.providerAdd({ type = "openai" }, function(res, code)
         if code == 0 and res and res.id then
             view.note = L("panel.providers.added", { id = res.id })
+            view.editing = res.id -- 新增后直接进编辑视图，方便接着填地址/密钥/模型
         else
             view.note = L("panel.failed", { label = L("panel.providers.add"), detail = code })
         end
         refresh()
         render()
     end)
+end
+
+--- 删除成功后退出编辑视图
+local function leaveEditor()
+    view.editing = nil
+    view.confirmRemove = nil
 end
 
 --- 两段式删除：第一次点只是记住 id，第二次点才真删
@@ -317,6 +325,7 @@ local function removeProvider(p)
     hub.providerRemove(p.id, function(_, code)
         if code == 0 then
             view.note = L("panel.providers.removed", { id = p.id })
+            leaveEditor()
         else
             view.note = L("panel.failed", { label = L("panel.providers.remove"), detail = code })
         end
@@ -340,6 +349,35 @@ local function fieldRow(label, node)
         ui.label({ text = label, fontSize = 11, color = "on_surface_variant",
                    width = 58, maxLines = 1 }),
         node,
+    })
+end
+
+--- 一行紧凑摘要（列表视图用，不含输入框：内容短、一屏能看全，也避免输入框吞掉滚轮）
+local function providerRow(p)
+    local status = p.enabled and L("panel.providers.on") or L("panel.providers.off")
+    local color = p.enabled and "primary" or "on_surface_variant"
+    local detail = string.format("%s · %s · %d %s", p.id, status, p.models_n, L("panel.unit.models"))
+    if p.missing_env and #p.missing_env > 0 then
+        detail = detail .. " · " .. L("panel.providers.missing_env") .. " " .. table.concat(p.missing_env, ",")
+    end
+    if p.models_n == 0 then
+        detail = detail .. " · " .. L("panel.providers.idle")
+    elseif not p.has_key and p.type ~= "mock" and p.type ~= "ollama" then
+        detail = detail .. " · " .. L("panel.providers.no_key")
+    end
+    return ui.row({ key = "prow:" .. p.id, gap = 8, align = "center",
+                    fill = "surface_variant", radius = 8, padding = 8 }, {
+        ui.glyph({ name = p.enabled and "plug-connected" or "plug", size = 14, color = color }),
+        ui.column({ gap = 1, flexGrow = 1 }, {
+            ui.label({ text = p.label, fontSize = 12, fontWeight = "medium",
+                       color = "on_surface", maxLines = 1 }),
+            ui.label({ text = detail, fontSize = 10, color = "on_surface_variant", maxLines = 1 }),
+        }),
+        ui.toggle({ checked = p.enabled,
+                    onChange = function(v) setEnabled(p, v == "true") end }),
+        ui.button({ glyph = "pencil", controlSize = "sm", variant = "ghost",
+                    tooltip = L("panel.providers.edit"),
+                    onClick = function() view.editing = p.id; render() end }),
     })
 end
 
@@ -441,26 +479,62 @@ local function providerCard(p)
     })
 end
 
+--- 测试结果卡片（列表/编辑两个视图都可能出现在底部）
+local function testBlock()
+    if not view.test then return nil end
+    return ui.column({ fill = "surface_variant", radius = 8, padding = 8, gap = 2 }, {
+        ui.label({ text = L("panel.providers.test_result", { id = view.test.id }), fontSize = 11,
+                   fontWeight = "medium", color = view.test.ok and "primary" or "error" }),
+        ui.label({ text = (view.test.text or ""):sub(1, 300), fontSize = 10, maxLines = 3,
+                   color = "on_surface_variant" }),
+    })
+end
+
+--- 服务商页签：列表（紧凑行，一眼看全）⇄ 编辑（只放一张卡片，不需要滚动）
 local function tabProviders()
     local list = providerList()
+
+    -- ── 编辑视图：整页只放一张卡片
+    if view.editing then
+        for _, p in ipairs(list) do
+            if p.id == view.editing then
+                local kids = {
+                    ui.row({ gap = 8, align = "center" }, {
+                        ui.button({ glyph = "arrow-left", controlSize = "sm", variant = "ghost",
+                                    tooltip = L("panel.providers.back"),
+                                    onClick = function()
+                                        view.editing = nil
+                                        view.confirmRemove = nil
+                                        render()
+                                    end }),
+                        ui.label({ text = L("panel.providers.edit_title", { id = p.id }), fontSize = 13,
+                                   fontWeight = "medium", color = "on_surface", flexGrow = 1,
+                                   maxLines = 1 }),
+                    }),
+                    providerCard(p),
+                }
+                local tb = testBlock()
+                if tb then table.insert(kids, tb) end
+                return ui.column({ gap = 8, padding = 12 }, kids)
+            end
+        end
+        -- 正在编辑的 provider 已被删掉：退回列表
+        view.editing = nil
+    end
+
+    -- ── 列表视图
     local children = { sectionTitle(L("panel.providers.title", { count = #list }), "server-2") }
     table.insert(children, ui.label({ text = L("panel.providers.hint"), fontSize = 10,
-                                      color = "on_surface_variant" }))
+                                      color = "on_surface_variant", maxLines = 2, height = 30 }))
     if #list == 0 then
         table.insert(children, ui.label({ text = L("panel.providers.empty"), fontSize = 11,
                                           color = "on_surface_variant" }))
     end
     for _, p in ipairs(list) do
-        table.insert(children, providerCard(p))
+        table.insert(children, providerRow(p))
     end
-    if view.test then
-        table.insert(children, ui.column({ fill = "surface_variant", radius = 8, padding = 8, gap = 2 }, {
-            ui.label({ text = L("panel.providers.test_result", { id = view.test.id }), fontSize = 11,
-                       fontWeight = "medium", color = view.test.ok and "primary" or "error" }),
-            ui.label({ text = (view.test.text or ""):sub(1, 300), fontSize = 10, maxLines = 3,
-                       color = "on_surface_variant" }),
-        }))
-    end
+    local tb = testBlock()
+    if tb then table.insert(children, tb) end
     table.insert(children, ui.row({ gap = 8, align = "center" }, {
         ui.button({ text = L("panel.providers.add"), glyph = "plus", variant = "primary",
                     controlSize = "md", onClick = function() addProvider() end }),

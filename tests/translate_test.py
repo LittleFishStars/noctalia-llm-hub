@@ -124,6 +124,13 @@ class FakeUpstream(BaseHTTPRequestHandler):
     # ── 四种上游协议 ────────────────────────────────────────────────────────
     def _anthropic(self, body: dict):
         text = "anthropic：" + _content_text(body.get("messages"))
+        if body.get("model") == "reason-model":
+            return self._json({"id": "msg_up", "type": "message", "role": "assistant",
+                               "model": body.get("model"),
+                               "content": [{"type": "thinking", "thinking": "先想一下"},
+                                           {"type": "text", "text": text}],
+                               "stop_reason": "end_turn",
+                               "usage": {"input_tokens": 9, "output_tokens": 4}})
         if body.get("stream"):
             return self._sse([
                 {"type": "message_start", "message": {
@@ -161,21 +168,28 @@ class FakeUpstream(BaseHTTPRequestHandler):
 
     def _openai(self, body: dict):
         text = "openai：" + _content_text(body.get("messages"))
+        # 带 reason 标记的请求：模拟推理模型，同时回 reasoning_content 与正文
+        extra = {"reasoning_content": "先想一下"} if body.get("model") == "reason-model" else {}
         if body.get("stream"):
-            return self._sse([
-                {"id": "chatcmpl_up", "object": "chat.completion.chunk",
-                 "model": body.get("model"),
-                 "choices": [{"index": 0, "delta": {"role": "assistant",
-                                                    "content": text}}]},
-                {"id": "chatcmpl_up", "object": "chat.completion.chunk",
-                 "model": body.get("model"),
-                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                 "usage": {"prompt_tokens": 3, "completion_tokens": 5}},
-            ])
+            chunks = []
+            if extra:
+                chunks.append({"id": "chatcmpl_up", "object": "chat.completion.chunk",
+                               "model": body.get("model"),
+                               "choices": [{"index": 0, "delta": dict(extra)}]})
+            chunks.append({"id": "chatcmpl_up", "object": "chat.completion.chunk",
+                           "model": body.get("model"),
+                           "choices": [{"index": 0, "delta": {"role": "assistant",
+                                                              "content": text}}]})
+            chunks.append({"id": "chatcmpl_up", "object": "chat.completion.chunk",
+                           "model": body.get("model"),
+                           "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                           "usage": {"prompt_tokens": 3, "completion_tokens": 5}})
+            return self._sse(chunks)
         return self._json({"id": "chatcmpl_up", "object": "chat.completion",
                            "model": body.get("model"),
                            "choices": [{"index": 0, "finish_reason": "stop",
-                                        "message": {"role": "assistant", "content": text}}],
+                                        "message": {"role": "assistant", "content": text,
+                                                    **extra}}],
                            "usage": {"prompt_tokens": 3, "completion_tokens": 5,
                                      "total_tokens": 8}})
 
@@ -505,6 +519,39 @@ def main() -> int:
         check("响应头回带 model/rule/tactic",
               bool(hdrs.get("X-LLMHub-Model")) and bool(hdrs.get("X-LLMHub-Rule"))
               and bool(hdrs.get("X-LLMHub-Tactic")), json.dumps(hdrs, ensure_ascii=False))
+
+        # ⑪ 思考内容（reasoning_content / thinking）透传
+        print("\n⑪ 思考内容透传")
+        # 用 X-LLMHub-Provider 固定上游，模型名 reason-model 让假上游回推理内容
+        st, resp, _ = post("/v1/chat/completions",
+                           {"model": "reason-model", "messages": [{"role": "user", "content": "hi"}]},
+                           {"X-LLMHub-Provider": "up-openai"})
+        msg = ((resp or {}).get("choices") or [{}])[0].get("message") or {}
+        check("OpenAI 入站响应带上游 reasoning_content",
+              msg.get("reasoning_content") == "先想一下",
+              json.dumps(msg, ensure_ascii=False)[:200])
+        check("OpenAI 入站响应同时保留正文", bool(msg.get("content")), json.dumps(msg, ensure_ascii=False)[:200])
+
+        st, resp, _ = post("/v1/messages",
+                           {"model": "reason-model", "max_tokens": 32,
+                            "messages": [{"role": "user", "content": "hi"}]},
+                           {"X-LLMHub-Provider": "up-anthropic"})
+        blocks = (resp or {}).get("content") or []
+        check("Anthropic 入站响应把思考放进 thinking 块",
+              bool(blocks) and blocks[0].get("type") == "thinking"
+              and blocks[0].get("thinking") == "先想一下",
+              json.dumps(blocks, ensure_ascii=False)[:200])
+        check("Anthropic thinking 块后面还有 text 块",
+              len(blocks) > 1 and blocks[1].get("type") == "text",
+              json.dumps(blocks, ensure_ascii=False)[:200])
+
+        events = stream("/v1/chat/completions",
+                        {"model": "reason-model", "messages": [{"role": "user", "content": "hi"}]},
+                        {"X-LLMHub-Provider": "up-openai"})
+        think_delta = "".join((e.get("choices") or [{}])[0].get("delta", {})
+                              .get("reasoning_content") or ""
+                              for e in events if e.get("object") == "chat.completion.chunk")
+        check("流式响应透出 reasoning_content", think_delta == "先想一下", repr(think_delta))
     finally:
         proc.terminate()
         try:

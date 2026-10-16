@@ -10,6 +10,8 @@
 - **任意数量 provider**：内置 `openai` / `anthropic` / `gemini` / `ollama` / `mock` 五种适配器，任何 OpenAI 兼容端点（DeepSeek、Moonshot、通义、OpenRouter、vLLM、SGLang、LM Studio、LocalAI、Jan…）都能直接接。
 - **规则自动路由**：按模型名、是否带工具、是否带图、prompt 长度、协议、标签、路径正则等条件匹配规则，规则内可用 `priority` / `cheapest` / `fastest` / `least_used` / `round_robin` / `random` / `listed` 七种挑选策略，并带自动降级（fallback）与重试。
 - **协议双向翻译**：入站 `OpenAI /chat/completions`、`Anthropic /v1/messages`、`OpenAI /v1/responses` 三种协议任意进、任意出；OpenAI 请求打到 Anthropic 上游、Claude Code 打到 Gemini 上游都可以（含 SSE 流式、工具调用、多模态图片、用量统计）。
+- **面板里改 provider**：控制台 `Provider` 页签两级视图（列表 ⇄ 编辑），可直接改类型、地址、密钥、模型，也能开关、连通性测试、新增/删除服务商，改完即时热重载，不用手改 JSON。
+- **思考内容透传**：DeepSeek 的 `reasoning_content`、Claude 的 `thinking` 块、Gemini 的 `thought` 都会归一成 `reasoning` 并按客户端协议原样输出（非流式与流式都支持）。
 - **本地接口**：默认只监听 `127.0.0.1:8787`，OpenAI 兼容，任何 SDK 改一行 `base_url` 即可接入；另有 `/admin/ask` 这种「一句话拿文本」的最简接口。
 - **CLI**：`llmhubd start/stop/status/ask/route/models/stats/logs/test/…`，不需要写代码就能用；`bin/llmhub` 是免安装入口。
 - **零依赖**：网关只用 Python 标准库（3.9+），不需要 pip 安装任何东西，也不需要 Node。
@@ -223,14 +225,16 @@ curl -s http://127.0.0.1:8787/admin/ask -H 'Content-Type: application/json' \
 
 ### 在控制台面板里管理服务商
 
-`Provider` 页签的每一项都是一个可编辑卡片：
+`Provider` 页签是**两级视图**，所以整页不需要滚动：
+
+1. **列表视图**：每个服务商一行（图标 + 名称 + `类型 · 启用状态 · N 个模型 · 密钥状态`），右侧是启停开关（点一下直接启用/停用）和一个铅笔按钮；列表下方是 `+ 添加服务商`。新增后会自动进入该服务商的编辑视图。
+2. **编辑视图**（点铅笔进入）：左上角 `← 返回列表`，页面里只放这一个服务商的卡片，一屏放得下，里面的字段：
 
 - **类型**：`openai` / `anthropic` / `gemini` / `ollama` / `mock` 一排按钮，点一下就换适配器（会同时重填该类型的默认 `base_url` / `path`）；
 - **地址**：服务商 base URL，支持 `mock://local` 这类抽象地址与 `${VAR}` 占位；
 - **密钥**：写成 password 输入框，**留空 = 不改动**（不会把已存的 key 清掉），也支持写 `${VAR}` 引用环境变量；
 - **模型**：逗号分隔的模型名（可用 `*` 通配），**留空 = 该 provider 暂不参与路由**；
-- 卡片底部：请求数·平均延迟 · `连通性测试` · `保存` · `删除`（删除是两段式，点两次才真删）；
-- 列表最下方是 `+ 添加服务商`：新建一个空 provider（默认 openai 类型、空模型列表、不参与路由），填好地址/密钥/模型再保存即可用。
+- 编辑视图底部同一行：请求数·平均延迟 · `连通性测试` · `保存` · `删除`（删除是两段式，点两次才真删）。
 
 保存会写回 `config.json`（权限 0600），网关按 mtime 热重载，**运行中无需重启**。等价的手工方式：`llmhub provider-add …`、`llmhub provider-remove <id>`、`llmhub set providers.<id>.models '["a"]' --json`。
 
@@ -359,6 +363,18 @@ provider 字段：
 
 翻译覆盖：system 提示位置、工具 schema（`function.parameters` ↔ `input_schema` ↔ `functionDeclarations`）、`tool_choice`（`auto/any/none/tool` 三种写法互转，`required` → Gemini 的 `functionCallingConfig.mode=ANY`）、工具结果回传、多模态图片（含 data URL → base64）、流式增量事件、`finish_reason` / `stop_reason` / `finishReason` 映射、tokens 用量字段映射。
 
+### 思考内容（reasoning / 思维链）也会透传
+
+推理模型（DeepSeek-R1/V4、Claude thinking、Gemini thinking）把思维链放在单独字段里，网关会先归一成内部 `reasoning`，再按客户端协议输出，不会像普通反向代理那样丢掉：
+
+| 上游的写法 | 客户端看到的 |
+| --- | --- |
+| OpenAI 风格 `reasoning_content`（DeepSeek 等） | OpenAI 协议 → `message.reasoning_content`；Anthropic 协议 → 开头的 `thinking` 块 |
+| Anthropic 的 `thinking` 块 | 原样保留（或翻成 OpenAI 的 `reasoning_content`） |
+| Gemini 的 `part.thought = true` | 同上 |
+
+流式也一样：OpenAI 侧发 `delta.reasoning_content`，Anthropic 侧发 `content_block_start(type=thinking)` + `thinking_delta`，思考结束后再正常输出正文（`thinking` 块与 `text` 块自动分开，不会拼在一起）。
+
 ---
 
 ## CLI 参考
@@ -391,7 +407,7 @@ provider 字段：
 | 入口 | 文件 | 作用 |
 | --- | --- | --- |
 | `[[widget]] status`（`bar.luau`） | 状态栏 | 显示运行状态/请求数/延迟，悬停出详情 tooltip，左键开控制台，右键复制端点 |
-| `[[panel]] console`（`panel.luau`） | 控制台面板 | 概览 / Provider / 路由规则 / 问答 / 日志 五个页签：Provider 页签可**逐项编辑类型、地址、密钥、模型**并保存（写回配置文件、运行中的网关照常热重载），底部有「添加服务商」按钮；另有启停、连通性测试、删除、提问、干跑路由、看请求日志 |
+| `[[panel]] console`（`panel.luau`） | 控制台面板（660×800） | 概览 / Provider / 路由规则 / 问答 / 日志 五个页签：Provider 页签是**列表 ⇄ 编辑两级视图**（列表里一行一个服务商，直接开关、点铅笔进编辑视图改类型/地址/密钥/模型，底部「+ 添加服务商」，整页无需滚动）；另有启停、重启、重载配置、清日志、重置统计、提问、干跑路由、看请求日志 |
 | `[[shortcut]] toggle`（`shortcut.luau`） | 快捷键 | 一键启停网关（右键打开面板） |
 | `[[service]] hub`（`service.luau`） | 后台服务 | 轮询网关状态并发布到共享状态；处理 IPC 事件；按设置决定退出时是否停网关 |
 
@@ -441,11 +457,11 @@ ylxc-llm-hub/
 
 ```bash
 python3 tests/smoke_test.py       # 通过 47 项，失败 0 项
-python3 tests/translate_test.py   # 通过 36 项，失败 0 项
+python3 tests/translate_test.py   # 通过 41 项，失败 0 项
 ```
 
 `smoke_test.py` 覆盖健康检查/鉴权、路由与 tactic、别名、场景前缀、流式响应头、统计分组、`/config` 打码、热重载、错误处理、优雅退出。
-`translate_test.py` 起一个假上游服务器，逐个断言 OpenAI↔Anthropic↔Gemini↔Ollama 的请求翻译与响应翻译（含工具调用、图片、SSE、用量映射）。
+`translate_test.py` 起一个假上游服务器，逐个断言 OpenAI↔Anthropic↔Gemini↔Ollama 的请求翻译与响应翻译（含工具调用、图片、SSE、用量映射、思考内容透传）。
 
 Luau 侧：
 
