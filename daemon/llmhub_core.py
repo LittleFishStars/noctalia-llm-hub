@@ -25,7 +25,7 @@ from llmhub_canon import CanonRequest, CanonResponse
 from llmhub_adapters import (ConfigError, HttpRequest, LineStream, UpstreamError, check_status,
                              get_adapter, http_request)
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 CONFIG_VERSION = 1
 
 
@@ -258,12 +258,30 @@ class ConfigStore:
         with self._lock:
             return list(self._errors)
 
+    @staticmethod
+    def _strip_internal(cfg: dict) -> dict:
+        """写盘前去掉以 _ 开头的内部字段（_missing_env 等），别污染用户配置。"""
+        out = dict(cfg)
+        provs = []
+        for p in out.get("providers") or []:
+            if isinstance(p, dict):
+                provs.append({k: v for k, v in p.items() if not str(k).startswith("_")})
+            else:
+                provs.append(p)
+        out["providers"] = provs
+        return out
+
     def save(self, cfg: dict) -> None:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         tmp = self.path + ".tmp"
+        data = self._strip_internal(cfg)
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
             f.write("\n")
+        try:
+            os.chmod(tmp, 0o600)   # 配置里可能有 api_key：只给属主读写
+        except OSError:
+            pass
         os.replace(tmp, self.path)
         with self._lock:
             self._cfg = self._normalize(cfg)
@@ -307,8 +325,15 @@ class ConfigStore:
         out["path"] = expand_env(p.get("path", tmpl.get("path", "")), missing)
         out["api_key"] = expand_env(p.get("api_key") or "", missing)
         out["headers"] = {str(k): expand_env(v, missing) for k, v in (p.get("headers") or {}).items()}
-        models = p.get("models") or ["*"]
-        out["models"] = [str(m) for m in (models if isinstance(models, list) else [models])]
+        raw_models = p.get("models")
+        # 显式空列表 = 还没配模型（面板新建的 provider）：保持为空，让它不参与路由
+        if raw_models is None:
+            models = ["*"]
+        elif isinstance(raw_models, list):
+            models = raw_models
+        else:
+            models = [raw_models]
+        out["models"] = [str(m) for m in models]
         out["model_map"] = {str(k): str(v) for k, v in (p.get("model_map") or {}).items()}
         out["priority"] = int(p.get("priority", 100))
         out["timeout_ms"] = int(p.get("timeout_ms") or 60000)
@@ -635,6 +660,9 @@ class Router:
             forced_pid = spec[:-2] if spec.endswith(":*") else ""
             for p in pbyid.values():
                 if not p.get("enabled"):
+                    continue
+                if not p.get("models"):
+                    # 没有声明任何模型 = 尚未配置（面板里新加的 provider 就是这样）
                     continue
                 if forced_pid and p["id"] != forced_pid:
                     continue

@@ -431,10 +431,16 @@ def cmd_providers(args) -> int:
     rules = out.get("rules") or []
     print(f"\n规则（{len(rules)} 条，自上而下匹配）：")
     for r in rules:
+        rt = r.get("route") if isinstance(r.get("route"), dict) else r
+        specs = rt.get("providers") or []
+        tactic = rt.get("tactic") or "priority"
+        shown = " → ".join(str(s) for s in specs) if specs else "（按 tactic 从候选池选）"
         print(f"  · {r.get('id')}: when={json.dumps(r.get('when'), ensure_ascii=False)} "
-              f"→ {' → '.join(r.get('providers') or [])} [{r.get('tactic')}]")
+              f"→ {shown} [{tactic}]")
     dr = out.get("default_route") or {}
-    print(f"默认路由：{' → '.join(dr.get('providers') or [])} [{dr.get('tactic')}] "
+    ds = dr.get("providers") or []
+    dshown = " → ".join(str(s) for s in ds) if ds else "（全部 provider）"
+    print(f"默认路由：{dshown} [{dr.get('tactic')}] "
           f"fallback={dr.get('fallback')}")
     return 0
 
@@ -571,10 +577,24 @@ def _coerce(raw: str):
 
 
 def _key_of(container, part: str):
-    """把路径段转成实际可用于 dict/list 的键；不适用时返回 None。"""
+    """把路径段转成实际可用于 dict/list 的键；不适用时返回 None。
+
+    列表除了下标，也接受条目里的 "id"（providers.mock.base_url）。
+    """
     if isinstance(container, list):
-        return int(part) if part.lstrip("-").isdigit() else None
+        if part.lstrip("-").isdigit():
+            return int(part)
+        for i, item in enumerate(container):
+            if isinstance(item, dict) and str(item.get("id", "")) == part:
+                return i
+        return None
     return part
+
+
+def _bad_segment(container, part: str) -> str:
+    if isinstance(container, list):
+        return f"列表里没有 id 为 '{part}' 的条目，'{part}' 也不是合法下标"
+    return f"路径段 '{part}' 不能用于 {type(container).__name__}"
 
 
 def _set_path(cfg, dotted: str, value) -> None:
@@ -585,7 +605,7 @@ def _set_path(cfg, dotted: str, value) -> None:
     for p in parts[:-1]:
         key = _key_of(cur, p)
         if key is None:
-            raise ValueError(f"路径段 '{p}' 不能用于 {type(cur).__name__}")
+            raise ValueError(_bad_segment(cur, p))
         if isinstance(cur, list):
             if key >= len(cur):
                 raise ValueError(f"下标越界：{p}")
@@ -598,7 +618,7 @@ def _set_path(cfg, dotted: str, value) -> None:
         cur = nxt
     last = _key_of(cur, parts[-1])
     if last is None:
-        raise ValueError(f"路径段 '{parts[-1]}' 不能用于 {type(cur).__name__}")
+        raise ValueError(_bad_segment(cur, parts[-1]))
     if isinstance(cur, list):
         if last >= len(cur):
             raise ValueError(f"下标越界：{parts[-1]}")
@@ -643,6 +663,86 @@ def cmd_set(args) -> int:
     print(json.dumps({"ok": True, "key": args.key, "value": cur, "path": path},
                      ensure_ascii=False))
     return 0
+
+def cmd_provider_add(args) -> int:
+    """新增一个 provider（面板「添加服务商」按钮调它）。"""
+    path = args.config or default_config_path()
+    store = ConfigStore(path)
+    if not os.path.exists(path):
+        store.save(dict(DEFAULT_CONFIG))
+    models = [m for m in (args.model or []) if m]
+    created = {"id": ""}
+
+    def fn(cfg):
+        provs = cfg.setdefault("providers", [])
+        pid = (args.id or "").strip()
+        if not pid:
+            n = 1
+            used = {str(p.get("id", "")) for p in provs}
+            while f"provider-{n}" in used:
+                n += 1
+            pid = f"provider-{n}"
+        if any(str(p.get("id", "")) == pid for p in provs):
+            raise ValueError(f"provider id '{pid}' 已存在")
+        entry = {
+            "id": pid,
+            "label": args.label or pid,
+            "type": args.type or "openai",
+            "enabled": not args.disabled,
+            "base_url": args.base_url or "",
+            "api_key": args.key or "",
+            "models": models,
+        }
+        if args.priority is not None:
+            entry["priority"] = args.priority
+        provs.append(entry)
+        created["id"] = pid
+
+    try:
+        store.mutate(fn)
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 2
+    cfg = store.snapshot()
+    index = next((i for i, p in enumerate(cfg.get("providers") or [])
+                  if str(p.get("id")) == created["id"]), -1)
+    print(json.dumps({"ok": True, "id": created["id"], "index": index,
+                      "type": args.type or "openai", "models": models,
+                      "enabled": not args.disabled, "path": path}, ensure_ascii=False))
+    return 0
+
+
+def cmd_provider_remove(args) -> int:
+    """按 id 或下标删除 provider。"""
+    path = args.config or default_config_path()
+    store = ConfigStore(path)
+    target = str(args.target).strip()
+    removed = {"id": ""}
+
+    def fn(cfg):
+        provs = cfg.get("providers") or []
+        idx = None
+        if target.lstrip("-").isdigit():
+            i = int(target)
+            if -len(provs) <= i < len(provs):
+                idx = i
+        else:
+            idx = next((i for i, p in enumerate(provs)
+                        if str(p.get("id", "")) == target), None)
+        if idx is None:
+            raise ValueError(f"没有找到 provider：{target}")
+        removed["id"] = str(provs[idx].get("id", ""))
+        provs.pop(idx)
+        cfg["providers"] = provs
+
+    try:
+        store.mutate(fn)
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 2
+    print(json.dumps({"ok": True, "removed": removed["id"], "path": path}, ensure_ascii=False))
+    return 0
+
 
 def cmd_config(args) -> int:
     path = args.config or default_config_path()
@@ -815,6 +915,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("key", help="点分路径，如 server.api_key / providers.0.enabled")
     s.add_argument("value")
     s.add_argument("--json", action="store_true", help="value 按 JSON 解析（强制类型）")
+    s = add("provider-add", cmd_provider_add, "新增一个 provider（面板「添加服务商」用）")
+    s.add_argument("--id", help="provider id（默认自动取 provider-N）")
+    s.add_argument("--type", default="openai", help="openai / anthropic / gemini / ollama / mock")
+    s.add_argument("--label")
+    s.add_argument("--base-url", help="服务商 API 地址，如 https://api.deepseek.com")
+    s.add_argument("--key", help="API key（也可写 ${ENV_VAR} 引用环境变量）")
+    s.add_argument("--model", action="append", help="可重复：模型名或 glob 模式")
+    s.add_argument("--priority", type=int)
+    s.add_argument("--disabled", action="store_true", help="建好后先保持停用")
+    s = add("provider-remove", cmd_provider_remove, "按 id 或下标删除 provider")
+    s.add_argument("target")
     s = add("config", cmd_config, "打印当前配置（密钥打码）")
     s.add_argument("--json", action="store_true")
     add("port", cmd_port, "打印网关端口")

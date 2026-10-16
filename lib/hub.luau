@@ -152,6 +152,83 @@ function M.cliJson(args, cb, timeoutMs)
     end, timeoutMs)
 end
 
+-- ── 配置写入（面板里编辑 provider / 规则用）──────────────────────────────
+
+--- 把 Lua 值编码成 JSON 文本（失败返回 nil）
+function M.jsonEncode(value)
+    local ok, text = pcall(noctalia.json.encode, value)
+    if ok and type(text) == "string" then return text end
+    return nil
+end
+
+--- 改配置里的一个键：M.setPath("providers.mock.base_url", "https://…")
+--- jsonValue=true 时 value 按 JSON 解析（数组 / 数字 / 布尔用它）
+function M.setPath(key, value, cb, jsonValue)
+    local args = { "set", key, tostring(value) }
+    if jsonValue then table.insert(args, "--json") end
+    M.cliJson(args, function(res, code)
+        if cb then cb(res, code) end
+    end, 20000)
+end
+
+--- 依次执行 ops = {{key, value, json}, …}；全部跑完后 cb(okCount, failCount)
+function M.runOps(ops, cb)
+    local okN, failN = 0, 0
+    local i = 0
+    local function step()
+        i = i + 1
+        local op = ops[i]
+        if not op then
+            if cb then cb(okN, failN) end
+            return
+        end
+        M.setPath(op[1], op[2], function(_, code)
+            if code == 0 then okN = okN + 1 else failN = failN + 1 end
+            step()
+        end, op[3])
+    end
+    step()
+end
+
+--- 新增 provider：opts = { type, id, label, base_url, key, models = {…} }
+--- 用 llmhubd provider-add（能真的往配置数组末尾追加，`set` 做不到）
+function M.providerAdd(opts, cb)
+    opts = opts or {}
+    local args = { "provider-add" }
+    local function opt(flag, value)
+        if type(value) == "string" and value ~= "" then
+            table.insert(args, flag)
+            table.insert(args, value)
+        end
+    end
+    opt("--type", opts.type)
+    opt("--id", opts.id)
+    opt("--label", opts.label)
+    opt("--base-url", opts.base_url)
+    opt("--key", opts.key)
+    for _, m in ipairs(opts.models or {}) do
+        opt("--model", m)
+    end
+    M.cliJson(args, function(res, code)
+        if cb then cb(res, code) end
+    end, 20000)
+end
+
+--- 删除 provider（id 或下标）
+function M.providerRemove(id, cb)
+    M.cliJson({ "provider-remove", tostring(id) }, function(res, code)
+        if cb then cb(res, code) end
+    end, 20000)
+end
+
+--- 把 "a, b，c" 拆成 {"a","b","c"}（英文/中文逗号、分号、空白都当分隔符）
+function M.splitList(text)
+    local out = {}
+    for item in tostring(text or ""):gmatch("[^,;，；%s]+") do
+        table.insert(out, item)
+    end
+    return out
+end
 -- ── 生命周期动作 ────────────────────────────────────────────────────────────
 
 --- 确保配置文件存在（首次运行写模板）。cb(ok, message)

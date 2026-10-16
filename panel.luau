@@ -22,6 +22,8 @@ local view = {
     route = nil,
     watched = false,
     dirty = false,
+    draft = {},          -- 未保存的输入框内容：{ "url:<id>" = "…", "key:<id>" = …, "models:<id>" = … }
+    confirmRemove = nil, -- 两段式删除：先点一次记 id，再点一次才真删
 }
 
 local function L(key, subst) return noctalia.tr(key, subst) end
@@ -77,6 +79,7 @@ local function providerList()
                 enabled = p.enabled and true or false,
                 models = p.models or {},
                 models_n = #(p.models or {}),
+                base_url = p.base_url, path = p.path,
                 priority = p.priority,
                 has_key = p.has_key, missing_env = p.missing_env,
                 requests = h.requests or p.requests or 0,
@@ -211,55 +214,238 @@ end
 
 -- ── 页签：Provider ──────────────────────────────────────────────────────────
 
+local TYPES_FALLBACK = { "openai", "anthropic", "gemini", "ollama", "mock" }
+
+--- 服务商类型候选（由守护进程 /config 给出，离线时用内置默认）
+local function providerTypes()
+    local cfg = view.snap and view.snap.config
+    local t = cfg and cfg.provider_types
+    if type(t) == "table" and #t > 0 then return t end
+    return TYPES_FALLBACK
+end
+
+
+local function draftOf(kind, id) return view.draft[kind .. ":" .. id] end
+local function setDraft(kind, id, text) view.draft[kind .. ":" .. id] = text end
+
+--- 保存一张卡片：只提交真的改动过的字段
+local function saveProvider(p)
+    local ops = {}
+    local url = draftOf("url", p.id)
+    if url and url ~= "" and url ~= (p.base_url or "") then
+        table.insert(ops, { "providers." .. p.id .. ".base_url", url, false })
+    end
+    local key = draftOf("key", p.id)
+    if key and key ~= "" then
+        table.insert(ops, { "providers." .. p.id .. ".api_key", key, false })
+    end
+    local models = draftOf("models", p.id)
+    if models then
+        local list = hub.splitList(models)
+        -- 空列表写死 "[]"：Luau 里空表无法与空对象区分，交给编码器可能产出 {}。
+        local text = "[]"
+        if #list > 0 then
+            text = hub.jsonEncode(list) or "[]"
+        end
+        table.insert(ops, { "providers." .. p.id .. ".models", text, true })
+    end
+    if #ops == 0 then
+        view.note = L("panel.providers.nochange", { id = p.id })
+        render()
+        return
+    end
+    view.note = L("panel.busy", { label = L("panel.providers.save") })
+    render()
+    hub.runOps(ops, function(_, failN)
+        if failN > 0 then
+            view.note = L("panel.failed", { label = L("panel.providers.save"), detail = failN })
+        else
+            view.note = L("panel.providers.saved", { id = p.id })
+            view.draft["url:" .. p.id] = nil
+            view.draft["key:" .. p.id] = nil
+            view.draft["models:" .. p.id] = nil
+        end
+        refresh()
+        render()
+    end)
+end
+
+--- 换类型：先把地址/路径清空，让守护进程按新类型的内置模板重填
+local function setType(p, newType)
+    if newType == p.type then return end
+    view.note = L("panel.busy", { label = L("panel.providers.type") })
+    render()
+    hub.runOps({
+        { "providers." .. p.id .. ".base_url", "", false },
+        { "providers." .. p.id .. ".path", "", false },
+        { "providers." .. p.id .. ".type", newType, false },
+    }, function(_, failN)
+        if failN > 0 then
+            view.note = L("panel.failed", { label = L("panel.providers.type"), detail = failN })
+        else
+            view.note = L("panel.providers.type_changed", { type = newType })
+        end
+        view.draft["url:" .. p.id] = nil
+        refresh()
+        render()
+    end)
+end
+
+local function addProvider()
+    view.note = L("panel.busy", { label = L("panel.providers.add") })
+    render()
+    hub.providerAdd({ type = "openai" }, function(res, code)
+        if code == 0 and res and res.id then
+            view.note = L("panel.providers.added", { id = res.id })
+        else
+            view.note = L("panel.failed", { label = L("panel.providers.add"), detail = code })
+        end
+        refresh()
+        render()
+    end)
+end
+
+--- 两段式删除：第一次点只是记住 id，第二次点才真删
+local function removeProvider(p)
+    if view.confirmRemove ~= p.id then
+        view.confirmRemove = p.id
+        view.note = L("panel.providers.remove_ask", { id = p.id })
+        render()
+        return
+    end
+    view.confirmRemove = nil
+    hub.providerRemove(p.id, function(_, code)
+        if code == 0 then
+            view.note = L("panel.providers.removed", { id = p.id })
+        else
+            view.note = L("panel.failed", { label = L("panel.providers.remove"), detail = code })
+        end
+        refresh()
+        render()
+    end)
+end
+
+local function testProvider(p)
+    view.test = { id = p.id, ok = nil }
+    render()
+    hub.cliJson({ "test", p.id, "--json" }, function(res, code)
+        view.test = { id = p.id, ok = code == 0,
+                      text = (res and res.text) or L("panel.providers.test_fail") }
+        render()
+    end, 60000)
+end
+
+local function fieldRow(label, node)
+    return ui.row({ gap = 8, align = "center" }, {
+        ui.label({ text = label, fontSize = 11, color = "on_surface_variant",
+                   width = 58, maxLines = 1 }),
+        node,
+    })
+end
+
+--- 一张可编辑的服务商卡片：类型 / 地址 / 密钥 / 模型 + 测试·保存·删除
+local function providerCard(p)
+    local status = p.enabled and L("panel.providers.on") or L("panel.providers.off")
+    local color = p.enabled and "primary" or "on_surface_variant"
+    local detail = string.format("%s · %s · %d %s", p.id, status, p.models_n,
+                                 L("panel.unit.models"))
+    if p.missing_env and #p.missing_env > 0 then
+        detail = detail .. " · " .. L("panel.providers.missing_env") ..
+                 " " .. table.concat(p.missing_env, ",")
+    end
+    if p.models_n == 0 then
+        detail = detail .. " · " .. L("panel.providers.idle")
+    elseif not p.has_key and p.type ~= "mock" and p.type ~= "ollama" then
+        detail = detail .. " · " .. L("panel.providers.no_key")
+    end
+    local stats = string.format("%s · %s", hub.fmtInt(p.requests or 0), hub.fmtMs(p.latency_ms))
+    if (p.errors or 0) > 0 then
+        stats = stats .. " · ✗ " .. tostring(p.errors)
+    end
+
+    local typeButtons = {}
+    for _, name in ipairs(providerTypes()) do
+        table.insert(typeButtons, ui.button({
+            text = name, controlSize = "sm",
+            variant = (name == p.type) and "primary" or "outline",
+            selected = (name == p.type),
+            tooltip = L("panel.providers.type_hint"),
+            onClick = function() setType(p, name) end,
+        }))
+    end
+
+    local urlInput = ui.input({
+        key = "url:" .. p.id,
+        value = draftOf("url", p.id) or p.base_url or "",
+        placeholder = L("panel.providers.url_hint"),
+        controlSize = "sm", flexGrow = 1, submitOnEnter = true,
+        onChange = function(v) setDraft("url", p.id, v) end,
+        onSubmit = function(v) setDraft("url", p.id, v); saveProvider(p) end,
+    })
+    local keyInput = ui.input({
+        key = "key:" .. p.id,
+        value = draftOf("key", p.id) or "",
+        placeholder = p.has_key and L("panel.providers.key_keep") or L("panel.providers.key_new"),
+        password = true, controlSize = "sm", flexGrow = 1, submitOnEnter = true,
+        onChange = function(v) setDraft("key", p.id, v) end,
+        onSubmit = function(v) setDraft("key", p.id, v); saveProvider(p) end,
+    })
+    local modelsInput = ui.input({
+        key = "models:" .. p.id,
+        value = draftOf("models", p.id) or table.concat(p.models or {}, ", "),
+        placeholder = L("panel.providers.models_hint"),
+        controlSize = "sm", flexGrow = 1, submitOnEnter = true,
+        onChange = function(v) setDraft("models", p.id, v) end,
+        onSubmit = function(v) setDraft("models", p.id, v); saveProvider(p) end,
+    })
+
+    local confirming = view.confirmRemove == p.id
+    return ui.column({ key = "card:" .. p.id, fill = "surface_variant", radius = 8,
+                       padding = 10, gap = 6 }, {
+        ui.row({ gap = 8, align = "center" }, {
+            ui.glyph({ name = p.enabled and "plug-connected" or "plug", size = 14, color = color }),
+            ui.column({ gap = 1, flexGrow = 1 }, {
+                ui.label({ text = p.label, fontSize = 12, fontWeight = "medium",
+                           color = "on_surface", maxLines = 1 }),
+                ui.label({ text = detail, fontSize = 10, color = "on_surface_variant",
+                           maxLines = 1 }),
+            }),
+            ui.toggle({ checked = p.enabled,
+                        onChange = function(v) setEnabled(p, v == "true") end }),
+        }),
+        fieldRow(L("panel.providers.type"), ui.row({ gap = 4, align = "center" }, typeButtons)),
+        fieldRow(L("panel.providers.url"), urlInput),
+        fieldRow(L("panel.providers.key"), keyInput),
+        fieldRow(L("panel.providers.models"), modelsInput),
+        ui.row({ gap = 6, align = "center" }, {
+            ui.label({ text = stats, fontSize = 10, color = "on_surface_variant",
+                       flexGrow = 1, maxLines = 1 }),
+            ui.button({ text = L("panel.providers.test"), glyph = "wand", variant = "ghost",
+                        controlSize = "sm", onClick = function() testProvider(p) end }),
+            ui.button({ text = L("panel.providers.save"), glyph = "check", variant = "primary",
+                        controlSize = "sm", onClick = function() saveProvider(p) end }),
+            ui.button({ text = confirming and L("panel.providers.remove_confirm")
+                                         or L("panel.providers.remove"),
+                        glyph = "trash", controlSize = "sm",
+                        variant = confirming and "destructive" or "ghost",
+                        onClick = function() removeProvider(p) end }),
+        }),
+        ui.label({ text = p.last_error or "", fontSize = 10, color = "error", maxLines = 1,
+                   visible = (p.last_error ~= nil and p.last_error ~= "") }),
+    })
+end
+
 local function tabProviders()
     local list = providerList()
     local children = { sectionTitle(L("panel.providers.title", { count = #list }), "server-2") }
+    table.insert(children, ui.label({ text = L("panel.providers.hint"), fontSize = 10,
+                                      color = "on_surface_variant" }))
     if #list == 0 then
         table.insert(children, ui.label({ text = L("panel.providers.empty"), fontSize = 11,
                                           color = "on_surface_variant" }))
     end
     for _, p in ipairs(list) do
-        local status = p.enabled and L("panel.providers.on") or L("panel.providers.off")
-        local color = p.enabled and "primary" or "on_surface_variant"
-        local detail = string.format("%s · %s · %d%s", p.type or "?", status, p.models_n,
-                                     L("panel.unit.models"))
-        if p.missing_env and #p.missing_env > 0 then
-            detail = detail .. " · " .. L("panel.providers.missing_env") .. " " .. table.concat(p.missing_env, ",")
-        end
-        if not p.has_key and p.type ~= "mock" and p.type ~= "ollama" then
-            detail = detail .. " · " .. L("panel.providers.no_key")
-        end
-        local stats = string.format("%s · %s", hub.fmtInt(p.requests or 0), hub.fmtMs(p.latency_ms))
-        if (p.errors or 0) > 0 then
-            stats = stats .. " · ✗ " .. tostring(p.errors)
-        end
-        table.insert(children, ui.column({ fill = "surface_variant", radius = 8, padding = 8, gap = 4 }, {
-            ui.row({ gap = 8, align = "center" }, {
-                ui.glyph({ name = p.enabled and "plug-connected" or "plug", size = 14, color = color }),
-                ui.column({ gap = 1, flexGrow = 1 }, {
-                    ui.label({ text = p.label, fontSize = 12, fontWeight = "medium", color = "on_surface",
-                               maxLines = 1 }),
-                    ui.label({ text = detail, fontSize = 10, color = "on_surface_variant", maxLines = 1 }),
-                }),
-                ui.label({ text = stats, fontSize = 10, color = "on_surface_variant", maxLines = 1 }),
-                ui.button({ text = p.enabled and L("panel.providers.disable") or L("panel.providers.enable"),
-                            variant = p.enabled and "outline" or "primary", controlSize = "sm",
-                            onClick = function() setEnabled(p, not p.enabled) end }),
-                ui.button({ glyph = "wand", variant = "ghost", controlSize = "sm",
-                            tooltip = L("panel.providers.test"),
-                            onClick = function()
-                                view.test = { id = p.id, ok = nil }
-                                render()
-                                hub.cliJson({ "test", p.id, "--json" }, function(res, code)
-                                    view.test = { id = p.id, ok = code == 0,
-                                                  text = (res and res.text) or L("panel.providers.test_fail") }
-                                    render()
-                                end, 60000)
-                            end }),
-            }),
-            ui.label({ text = p.last_error or "", fontSize = 10, color = "error", maxLines = 1,
-                       visible = (p.last_error ~= nil and p.last_error ~= "") }),
-        }))
+        table.insert(children, providerCard(p))
     end
     if view.test then
         table.insert(children, ui.column({ fill = "surface_variant", radius = 8, padding = 8, gap = 2 }, {
@@ -269,6 +455,12 @@ local function tabProviders()
                        color = "on_surface_variant" }),
         }))
     end
+    table.insert(children, ui.row({ gap = 8, align = "center" }, {
+        ui.button({ text = L("panel.providers.add"), glyph = "plus", variant = "primary",
+                    controlSize = "md", onClick = function() addProvider() end }),
+        ui.label({ text = L("panel.providers.add_hint"), fontSize = 10, flexGrow = 1,
+                   color = "on_surface_variant" }),
+    }))
     return ui.column({ gap = 8, padding = 12 }, children)
 end
 

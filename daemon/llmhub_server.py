@@ -19,8 +19,8 @@ import time
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from llmhub_adapters import (ConfigError, HttpRequest, UpstreamError, check_status, get_adapter,
-                             http_request)
+from llmhub_adapters import (ConfigError, HttpRequest, UpstreamError, adapter_types, check_status,
+                             get_adapter, http_request)
 from llmhub_canon import (PARSERS, CanonRequest, CanonResponse, Msg, Part, StreamWriter,
                           new_id, serialize_response)
 from llmhub_core import (VERSION, ConfigStore, Executor, RouteDecision, Router, Stats,
@@ -405,6 +405,7 @@ class Gateway:
             "config_path": self.store.path,
             "data_dir": self.stats.data_dir,
             "server": mask_server(cfg.get("server")),
+            "provider_types": adapter_types(),   # 面板「服务商类型」下拉的候选
             "providers": provs,
             "rules": cfg.get("rules"),
             "default_route": cfg.get("default_route"),

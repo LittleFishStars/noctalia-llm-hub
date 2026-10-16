@@ -221,6 +221,19 @@ curl -s http://127.0.0.1:8787/admin/ask -H 'Content-Type: application/json' \
 
 字段值支持环境变量占位：`${VAR}`、`${VAR:-默认值}`、`env:VAR`。缺失的变量会记进该 provider 的 `missing_env`，在面板和 `/health` 里能看到（**不会**把 undefined 当字符串发出去）。
 
+### 在控制台面板里管理服务商
+
+`Provider` 页签的每一项都是一个可编辑卡片：
+
+- **类型**：`openai` / `anthropic` / `gemini` / `ollama` / `mock` 一排按钮，点一下就换适配器（会同时重填该类型的默认 `base_url` / `path`）；
+- **地址**：服务商 base URL，支持 `mock://local` 这类抽象地址与 `${VAR}` 占位；
+- **密钥**：写成 password 输入框，**留空 = 不改动**（不会把已存的 key 清掉），也支持写 `${VAR}` 引用环境变量；
+- **模型**：逗号分隔的模型名（可用 `*` 通配），**留空 = 该 provider 暂不参与路由**；
+- 卡片底部：请求数·平均延迟 · `连通性测试` · `保存` · `删除`（删除是两段式，点两次才真删）；
+- 列表最下方是 `+ 添加服务商`：新建一个空 provider（默认 openai 类型、空模型列表、不参与路由），填好地址/密钥/模型再保存即可用。
+
+保存会写回 `config.json`（权限 0600），网关按 mtime 热重载，**运行中无需重启**。等价的手工方式：`llmhub provider-add …`、`llmhub provider-remove <id>`、`llmhub set providers.<id>.models '["a"]' --json`。
+
 ---
 
 ## 路由规则
@@ -365,7 +378,9 @@ provider 字段：
 | `enable <id>` / `disable <id>` | 开关 provider（运行中即时生效并写回配置） |
 | `test <id>` | 连通性测试（`-p` 自定义 prompt、`--json`） |
 | `init` / `config` / `port` / `doctor` | 写配置模板 / 打印配置（密钥打码）/ 打印端口 / 环境自检 |
-| `set <点分键> <值>` | 改配置，支持数组下标：`set providers.1.enabled true`、`set server.port 9000` |
+| `set <点分键> <值>` | 改配置，支持数组下标与 **id 定位**：`set providers.1.enabled true`、`set providers.deepseek.api_key sk-xxx`、`set providers.acme.models '["a","b"]' --json` |
+| `provider-add` | 新增服务商：`provider-add --type anthropic --id acme --label 公司网关 --base-url https://… --key ${ACME_KEY} --model a --model b --priority 5`；默认 `type=openai`、`models=[]`（空 = 暂不参与路由） |
+| `provider-remove <id\|下标>` | 删除服务商：`provider-remove acme` |
 
 ---
 
@@ -376,7 +391,7 @@ provider 字段：
 | 入口 | 文件 | 作用 |
 | --- | --- | --- |
 | `[[widget]] status`（`bar.luau`） | 状态栏 | 显示运行状态/请求数/延迟，悬停出详情 tooltip，左键开控制台，右键复制端点 |
-| `[[panel]] console`（`panel.luau`） | 控制台面板 | 概览 / Provider / 路由规则 / 问答 / 日志 五个页签，可直接启停 provider、提问、干跑路由、看请求日志 |
+| `[[panel]] console`（`panel.luau`） | 控制台面板 | 概览 / Provider / 路由规则 / 问答 / 日志 五个页签：Provider 页签可**逐项编辑类型、地址、密钥、模型**并保存（写回配置文件、运行中的网关照常热重载），底部有「添加服务商」按钮；另有启停、连通性测试、删除、提问、干跑路由、看请求日志 |
 | `[[shortcut]] toggle`（`shortcut.luau`） | 快捷键 | 一键启停网关（右键打开面板） |
 | `[[service]] hub`（`service.luau`） | 后台服务 | 轮询网关状态并发布到共享状态；处理 IPC 事件；按设置决定退出时是否停网关 |
 
