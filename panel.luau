@@ -385,7 +385,8 @@ local function providerCard(p)
     local keyInput = ui.input({
         key = "key:" .. p.id,
         value = draftOf("key", p.id) or "",
-        placeholder = p.has_key and L("panel.providers.key_keep") or L("panel.providers.key_new"),
+        -- password 字段连 placeholder 也会被渲染成圆点，所以这里不给 placeholder，改用下方提示行。
+        placeholder = "",
         password = true, controlSize = "sm", flexGrow = 1, submitOnEnter = true,
         onChange = function(v) setDraft("key", p.id, v) end,
         onSubmit = function(v) setDraft("key", p.id, v); saveProvider(p) end,
@@ -415,7 +416,12 @@ local function providerCard(p)
         }),
         fieldRow(L("panel.providers.type"), ui.row({ gap = 4, align = "center" }, typeButtons)),
         fieldRow(L("panel.providers.url"), urlInput),
-        fieldRow(L("panel.providers.key"), keyInput),
+        ui.column({ gap = 2 }, {
+            fieldRow(L("panel.providers.key"), keyInput),
+            ui.label({ text = p.has_key and L("panel.providers.key_hint_saved")
+                                          or L("panel.providers.key_hint_new"),
+                       fontSize = 9, color = "on_surface_variant", maxLines = 1 }),
+        }),
         fieldRow(L("panel.providers.models"), modelsInput),
         ui.row({ gap = 6, align = "center" }, {
             ui.label({ text = stats, fontSize = 10, color = "on_surface_variant",
@@ -793,9 +799,24 @@ end
 function onClose()
     view.logsBusy = false
 end
-
 function update()
     if view.tab == "logs" then fetchLogs() end
+    -- 快照过期就自己拉一次：service 卡住／没在跑时，面板依旧能自我更新。
+    local now = noctalia.nowMs()
+    if view.fetching then
+        if now - (view.fetchAt or 0) < 20000 then return end
+        view.fetching = false
+    end
+    if view.fetchedAt and now - view.fetchedAt < 6000 then return end
+    view.fetching = true
+    view.fetchAt = now
+    hub.snapshot({ logs = 25 }, function(snap)
+        view.fetching = false
+        view.fetchedAt = noctalia.nowMs()
+        view.snap = snap
+        hub.publish(snap)
+        render()
+    end)
 end
 
 function onKey(chord, pressed)

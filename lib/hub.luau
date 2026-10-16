@@ -134,9 +134,19 @@ end
 
 --- 跑一条 CLI 命令。cb(stdout, exitCode)
 function M.cli(args, cb, timeoutMs)
-    return noctalia.runAsync(M.argv(args), function(res)
+    -- runAsync 返回 false 时回调永远不会触发，这里补一次调用，避免调用方的 busy 标志卡死。
+    local fired = false
+    local started = noctalia.runAsync(M.argv(args), function(res)
+        if fired then return end
+        fired = true
         if cb then cb(res.stdout or "", res.exitCode or 0) end
     end, timeoutMs or 30000)
+    if not started and not fired then
+        fired = true
+        if cb then cb("", -1) end
+        return false
+    end
+    return started
 end
 
 --- 跑 CLI 并解析 JSON 输出。cb(table|nil, exitCode, rawStdout)

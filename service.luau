@@ -10,11 +10,18 @@
 local hub = require("./lib/hub.luau")
 
 local busy = false
+local busySince = 0
 local askSeq = 0
 
 local function poll()
-    if busy then return end
+    local now = noctalia.nowMs()
+    if busy then
+        -- 上次轮询的回调没回来（进程被杀 / 启动失败）时不能永久卡死：超时强制复位。
+        if now - busySince < 30000 then return end
+        noctalia.log("llm-hub: 上一次轮询超过 30s 未返回，强制复位后重试")
+    end
     busy = true
+    busySince = now
     hub.snapshot({}, function(snap)
         snap.autostart = hub.setting("autostart")
         snap.stop_on_exit = hub.setting("stop_on_exit")

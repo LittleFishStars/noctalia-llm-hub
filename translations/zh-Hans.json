@@ -139,8 +139,6 @@
       "url": "地址",
       "url_hint": "服务商 API 地址，如 https://api.deepseek.com（不要带 /v1）",
       "key": "密钥",
-      "key_new": "粘贴 API key（也支持 ${VAR} 引用环境变量）",
-      "key_keep": "已配置 · 留空不改",
       "models": "模型",
       "models_hint": "逗号分隔；* = 该服务商全部模型；留空则不参与路由",
       "save": "保存",
@@ -154,7 +152,9 @@
       "remove_ask": "再点一次「确认删除」即可删除 {id}",
       "removed": "已删除 {id}",
       "idle": "未配置模型 · 不参与路由",
-      "type_changed": "已切换为 {type}，地址已按新类型重置，请确认模型"
+      "type_changed": "已切换为 {type}，地址已按新类型重置，请确认模型",
+      "key_hint_saved": "已保存密钥 · 留空不改动（支持 ${VAR} 引用环境变量）",
+      "key_hint_new": "粘贴 API key（支持 ${VAR} 引用环境变量）"
     },
     "rules": {
       "title": "路由规则",
