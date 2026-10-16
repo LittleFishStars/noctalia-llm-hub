@@ -12,6 +12,7 @@ local hub = require("./lib/hub.luau")
 local busy = false
 local busySince = 0
 local askSeq = 0
+local lastSig = nil
 
 local function poll()
     local now = noctalia.nowMs()
@@ -26,6 +27,16 @@ local function poll()
         snap.autostart = hub.setting("autostart")
         snap.stop_on_exit = hub.setting("stop_on_exit")
         snap.has_key = hub.setting("api_key") ~= ""
+        -- 只在状态真变了时落一行日志（排查“面板数据不动”这类问题时很有用）
+        local h = snap.health
+        local sig = string.format("%s|%s|%s", tostring(snap.running),
+            tostring(h and h.version), tostring(h and h.pid))
+        if sig ~= lastSig then
+            lastSig = sig
+            noctalia.log(string.format("llm-hub: 网关%s%s",
+                snap.running and "运行中" or "未运行",
+                h and h.version and (" · v" .. tostring(h.version)) or ""))
+        end
         hub.publish(snap)
         busy = false
     end)
