@@ -38,11 +38,7 @@
     },
     "show_text": {
       "label": "显示文字",
-      "description": "在栏图标旁显示请求数等文字"
-    },
-    "show_requests": {
-      "label": "显示请求数",
-      "description": "文字里包含累计请求数"
+      "description": "在栏图标旁显示文字（目前只有延迟）"
     },
     "show_latency": {
       "label": "显示延迟",

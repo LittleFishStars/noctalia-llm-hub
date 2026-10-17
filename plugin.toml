@@ -16,7 +16,7 @@
 id = "ylxc/llm-hub"
 name = "LLM Hub"
 name_key = "plugin.name"
-version = "1.2.3"
+version = "1.2.4"
 plugin_api = 26
 author = "ylxc"
 license = "MIT"
@@ -98,12 +98,6 @@ entry = "bar.luau"
   key = "show_text"
   type = "bool"
   label_key = "settings.show_text.label"
-  default = true
-
-  [[widget.setting]]
-  key = "show_requests"
-  type = "bool"
-  label_key = "settings.show_requests.label"
   default = true
 
   [[widget.setting]]

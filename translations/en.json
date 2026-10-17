@@ -38,11 +38,7 @@
     },
     "show_text": {
       "label": "Show text",
-      "description": "Show request counts next to the bar glyph"
-    },
-    "show_requests": {
-      "label": "Show requests",
-      "description": "Include the total request count in the text"
+      "description": "Show text next to the bar glyph (latency only for now)"
     },
     "show_latency": {
       "label": "Show latency",

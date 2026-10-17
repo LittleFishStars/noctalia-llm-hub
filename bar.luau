@@ -32,11 +32,9 @@ end
 
 local function buildText(snap)
     if not snap or not snap.running then return "" end
-    local st = snap.stats or {}
     local parts = {}
-    if cfgBool("show_requests", true) then
-        table.insert(parts, hub.fmtNum(st.total_requests or 0))
-    end
+    -- 栏上不放任何计数：请求次数/Token/成本只放在悬停详情（tooltip）与控制台面板里。
+    -- 文字位留给延迟这类轻量信息，且默认关闭（show_latency）。
     if cfgBool("show_latency", false) then
         local ms = avgLatency(snap)
         if ms then table.insert(parts, hub.fmtMs(ms)) end

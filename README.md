@@ -407,12 +407,12 @@ provider 字段：
 
 | 入口 | 文件 | 作用 |
 | --- | --- | --- |
-| `[[widget]] status`（`bar.luau`） | 状态栏 | 显示运行状态/请求数/延迟，悬停出详情 tooltip，左键开控制台，右键复制端点 |
+| `[[widget]] status`（`bar.luau`） | 状态栏 | 默认只有图标（运行中为强调色）+ 悬停详情 tooltip，不带任何计数；可选在图标旁显示平均延迟。左键开控制台，右键复制端点 |
 | `[[panel]] console`（`panel.luau`） | 控制台面板（660×800） | 概览 / Provider / 路由规则 / 问答 / 日志 五个页签：Provider 页签是**列表 ⇄ 编辑两级视图**（列表里一行一个服务商，直接开关、点铅笔进编辑视图改类型/地址/密钥/模型，底部「+ 添加服务商」，整页无需滚动）；另有启停、重启、重载配置、清日志、重置统计、提问、干跑路由、看请求日志 |
 | `[[shortcut]] toggle`（`shortcut.luau`） | 快捷键 | 一键启停网关（右键打开面板） |
 | `[[service]] hub`（`service.luau`） | 后台服务 | 轮询网关状态并发布到共享状态；处理 IPC 事件；按设置决定退出时是否停网关 |
 
-设置项（设置 → 插件 → LLM Hub）：`autostart`、`stop_on_exit`、`port`、`host`、`api_key`、`config_path`、`poll_interval_ms`；widget 实例另有 `glyph`、`show_text`、`show_requests`、`show_latency`。
+设置项（设置 → 插件 → LLM Hub）：`autostart`、`stop_on_exit`、`port`、`host`、`api_key`、`config_path`、`poll_interval_ms`；widget 实例另有 `glyph`、`show_text`、`show_latency`（栏上不显示请求数等计数，完整用量在悬停详情与控制台面板里）。
 
 IPC 事件：
 
