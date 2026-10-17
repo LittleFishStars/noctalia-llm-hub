@@ -235,6 +235,7 @@ curl -s http://127.0.0.1:8787/admin/ask -H 'Content-Type: application/json' \
 - **密钥**：写成 password 输入框，**留空 = 不改动**（不会把已存的 key 清掉），也支持写 `${VAR}` 引用环境变量；
 - **模型**：逗号分隔的模型名（可用 `*` 通配），**留空 = 该 provider 暂不参与路由**；
 - 编辑视图底部同一行：请求数·平均延迟 · `连通性测试` · `保存` · `删除`（删除是两段式，点两次才真删）。
+- **连通性测试**的结果直接回显上游答复，格式为 `模型 · 延迟 · tokens in+out` + 首行正文；失败时显示上游原话（如 `bad_request: 上游 HTTP 400: The supported API model names are …`）而不是笼统的「无法连接」——CLI 的 `--json` 结果只走 stdout，人读行一律走 stderr，面板才能稳定解析。
 
 保存会写回 `config.json`（权限 0600），网关按 mtime 热重载，**运行中无需重启**。等价的手工方式：`llmhub provider-add …`、`llmhub provider-remove <id>`、`llmhub set providers.<id>.models '["a"]' --json`。
 
@@ -419,8 +420,14 @@ IPC 事件：
 noctalia msg plugin ylxc/llm-hub:hub all start      # 也支持 stop / restart / refresh / status
 noctalia msg plugin ylxc/llm-hub:hub all ask "你好"  # 提问，结果落到共享状态
 noctalia msg plugin ylxc/llm-hub:status - toggle    # widget 入口（需要指定 bar 目标）
+noctalia msg plugin ylxc/llm-hub:console all test deepseek      # 面板里跑一次连通性测试（target 必须写 all）
 noctalia msg panel-toggle ylxc/llm-hub:console
+noctalia msg panel-open ylxc/llm-hub:console providers        # 直接开在 Provider 页
+noctalia msg panel-open ylxc/llm-hub:console test:deepseek    # 开在 Provider 页并顺手测一下
+noctalia msg panel-open ylxc/llm-hub:console logs             # 直接开在日志页
 ```
+
+`panel-open` 的第二个参数（context）可以接 `overview` / `providers` / `providers:<id>` / `rules` / `ask` / `logs` / `test[:<id>]`，栏按钮或脚本可据此直接定位到某一页；面板的 `test` 事件同样支持带一个 provider id，跑完把结果直接显示在 Provider 页。
 
 插件把守护进程的端口/pid/日志放在 `pluginDataDir()`（跨插件更新存活），配置文件默认仍是 `~/.config/llm-hub/config.json`。
 

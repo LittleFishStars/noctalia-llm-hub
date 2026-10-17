@@ -150,15 +150,38 @@ function M.cli(args, cb, timeoutMs)
 end
 
 --- 跑 CLI 并解析 JSON 输出。cb(table|nil, exitCode, rawStdout)
+--- 从可能混有人类可读行的输出里捞出末尾的 JSON 对象。
+--- CLI 有的子命令先打一行「✓ provider:model 123ms」再打 JSON，整段 decode 必然失败；
+--- 这里从每个 `{` 起点试到本段最后一个 `}`，取第一个能解出来的。
+local function pickJson(text)
+    if not text or text == "" then return nil end
+    local ok, val = pcall(noctalia.json.decode, text)
+    if ok and type(val) == "table" then return val end
+
+    local last = text:find("}", -1, true)
+    if not last then return nil end
+    local starts = {}
+    local pos = 1
+    while true do
+        local i = text:find("{", pos, true)
+        if not i then break end
+        table.insert(starts, i)
+        pos = i + 1
+    end
+    for i = #starts, 1, -1 do
+        if starts[i] < last then
+            local ok2, val2 = pcall(noctalia.json.decode, text:sub(starts[i], last))
+            if ok2 and type(val2) == "table" then return val2 end
+        end
+    end
+    return nil
+end
+
+--- 跑 CLI 并解析 JSON 输出。cb(table|nil, exitCode, rawStdout)
 function M.cliJson(args, cb, timeoutMs)
     return M.cli(args, function(out, code)
-        local data = nil
-        local text = (out or ""):match("^%s*(.-)%s*$")
-        if text ~= "" then
-            local ok, val = pcall(noctalia.json.decode, text)
-            if ok and type(val) == "table" then data = val end
-        end
-        if cb then cb(data, code, out) end
+        local text = (out or ""):match("^%s*(.-)%s*$") or ""
+        if cb then cb(pickJson(text), code, out) end
     end, timeoutMs)
 end
 

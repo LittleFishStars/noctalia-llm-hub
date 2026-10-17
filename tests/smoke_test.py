@@ -42,6 +42,10 @@ CONFIG = {
         {"id": "mock-tools", "type": "mock", "enabled": True, "priority": 1,
          "models": ["tool-model"],
          "mock": {"fake_tool": {"name": "get_time", "args": "{\"tz\":\"UTC\"}"}}},
+        # 故意指向不可达端口：CLI / 面板的失败路径要有可断言的结果
+        {"id": "dead-upstream", "type": "openai", "enabled": True, "priority": 99,
+         "base_url": "http://127.0.0.1:9", "api_key": "dead-key",
+         "models": ["dead-model"]},
     ],
     "rules": [
         {"id": "tool-heavy", "when": {"has_tools": True}, "providers": ["mock-tools"],
@@ -183,9 +187,10 @@ def main() -> int:
         print("① 健康检查与鉴权")
         st, h, _ = c.call("/health")
         check("GET /health 返回 200", st == 200 and h.get("status") == "ok")
-        check("health 列出 provider 且标记启用数", len(h.get("providers") or []) == 5
+        check("health 列出 provider 且标记启用数", len(h.get("providers") or []) == 6
               and set(h.get("enabled_providers") or []) == {"mock-primary", "mock-flaky",
-                                                            "mock-cheap", "mock-tools"},
+                                                            "mock-cheap", "mock-tools",
+                                                            "dead-upstream"},
               str(h.get("enabled_providers")))
         st, err, _ = c.call("/stats", key="wrong-key")
         check("错误 API Key 被拒绝 401", st == 401, f"status={st}")
@@ -354,6 +359,44 @@ def main() -> int:
         check("无可用候选时返回 5xx 且带错误体", st >= 400 and "error" in json.dumps(e4),
               f"status={st} {json.dumps(e4)[:150]}")
         c.call("/admin/providers/mock-primary/toggle", {"enabled": True})
+
+        print("\n⑫ CLI 的 --json 输出必须能整体解析（面板拿它显示测试结果）")
+        cli = [sys.executable, DAEMON, "--config", cfg_path, "--data-dir", state]
+        env = {**os.environ, "LLMHUB_DATA_DIR": state}
+
+        def run_cli(*extra):
+            return subprocess.run(cli + list(extra), capture_output=True, text=True,
+                                  timeout=180, env=env)
+
+        def as_json(text):
+            try:
+                val = json.loads(text)
+                return val if isinstance(val, dict) else None
+            except Exception:
+                return None
+
+        r = run_cli("test", "mock-primary", "--json")
+        good = as_json(r.stdout)
+        check("test --json 的 stdout 本身就是合法 JSON（不再是混排文本）", good is not None,
+              f"stdout={r.stdout[:120]!r} stderr={r.stderr[:80]!r}")
+        check("成功结果带 ok/model/tokens/text",
+              bool(good) and good.get("ok") and good.get("model") and "tokens_out" in good,
+              json.dumps(good or {})[:160])
+        check("人类可读行改走 stderr", "✓" in (r.stderr or "") and "✓" not in r.stdout,
+              f"stderr={r.stderr[:80]!r}")
+
+        r2 = run_cli("test", "dead-upstream", "--json")
+        bad = as_json(r2.stdout)
+        check("上游不可达时也给 JSON（ok=false + 错误信息）",
+              bad is not None and bad.get("ok") is False and bool(bad.get("error")),
+              json.dumps(bad or {})[:160])
+        check("失败时退出码非 0", r2.returncode != 0, f"rc={r2.returncode}")
+        check("失败时的 JSON 里 provider 字段仍是请求的那一个",
+              (bad or {}).get("provider") == "dead-upstream", json.dumps(bad or {})[:120])
+
+        r3 = run_cli("test", "mock-primary", "--model", "mock-echo")
+        check("不带 --json 时 stdout 仍是人类可读行",
+              "✓" in r3.stdout and as_json(r3.stdout) is None, r3.stdout[:100])
 
         print("\n⑩ 优雅停止")
         proc.terminate()

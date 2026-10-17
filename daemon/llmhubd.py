@@ -456,16 +456,30 @@ def cmd_test(args) -> int:
     body = {"provider": args.id, "prompt": args.prompt, "max_tokens": args.max_tokens}
     if args.model:
         body["model"] = args.model
-    out = g.call("/admin/test", body, timeout=180)
+
+    # --json 时人类可读行一律走 stderr，stdout 只留一个 JSON 对象；
+    # 否则调用方（面板 hub.cliJson）把整段 stdout 当 JSON 解析必然失败，
+    # 从而回落成「无法连接」这类兜底文案。
+    def say(line: str) -> None:
+        print(line, file=sys.stderr if args.json else sys.stdout)
+
+    try:
+        out = g.call("/admin/test", body, timeout=180)
+    except SystemExit as exc:  # 网关没起来 / 端口不通，也给出可解析的结构化结果
+        out = {"ok": False, "kind": "connect", "provider": args.id,
+               "error": str(exc)}
+    out.setdefault("provider", args.id)  # 失败体也带上请求的 provider，便于调用方归因
     if out.get("ok"):
-        print(f"✓ {out['provider']}:{out['model']} {out['ms']}ms "
-              f"tokens {out['tokens_in']}+{out['tokens_out']}")
-        print(out.get("text", ""))
-        if args.json:
-            print(json.dumps(out, ensure_ascii=False, indent=2))
-        return 0
-    print(f"✗ {out.get('kind')}: {out.get('error')}")
-    return 1
+        say(f"✓ {out['provider']}:{out['model']} {out['ms']}ms "
+            f"tokens {out['tokens_in']}+{out['tokens_out']}")
+        say(out.get("text", ""))
+        rc = 0
+    else:
+        say(f"✗ {out.get('kind') or 'error'}: {out.get('error')}")
+        rc = 1
+    if args.json:
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+    return rc
 
 
 def cmd_stats(args) -> int:

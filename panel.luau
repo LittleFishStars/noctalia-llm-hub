@@ -334,12 +334,35 @@ local function removeProvider(p)
     end)
 end
 
+--- 把测试结果整理成一行摘要 + 正文：成功显示 model/延迟/tokens 与答复，
+--- 失败显示上游原话（kind: error），实在没 JSON 才回落兜底文案。
+local function testText(res, code, raw)
+    if type(res) == "table" then
+        if res.ok and res.text then
+            return string.format("%s · %sms · %d+%d tokens\n%s",
+                tostring(res.model or ""), tostring(res.ms or ""),
+                tonumber(res.tokens_in) or 0, tonumber(res.tokens_out) or 0,
+                tostring(res.text))
+        end
+        if not res.ok then
+            return string.format("%s: %s", tostring(res.kind or "error"),
+                tostring(res.error or L("panel.providers.test_fail")))
+        end
+    end
+    -- 没有 JSON（老版本 CLI / 纯文本输出）：用原始输出的第一行，别一律说「无法连接」
+    local first = (raw or ""):match("^%s*([^\n]*)")
+    if first and first ~= "" then return first end
+    if code ~= 0 then return string.format("exit %s", tostring(code)) end
+    return L("panel.providers.test_fail")
+end
+
 local function testProvider(p)
     view.test = { id = p.id, ok = nil }
     render()
-    hub.cliJson({ "test", p.id, "--json" }, function(res, code)
-        view.test = { id = p.id, ok = code == 0,
-                      text = (res and res.text) or L("panel.providers.test_fail") }
+    hub.cliJson({ "test", p.id, "--json" }, function(res, code, raw)
+        local okFlag = code == 0
+        if type(res) == "table" and res.ok ~= nil then okFlag = res.ok and true or false end
+        view.test = { id = p.id, ok = okFlag, text = testText(res, code, raw) }
         render()
     end, 60000)
 end
@@ -854,7 +877,55 @@ function render()
 end
 
 -- ── 宿主回调 ────────────────────────────────────────────────────────────────
+--- 按 id 跑一次连通性测试（id 为空 = 第一个 provider）。
+--- 供 onOpen / onIpc 使用：面板还没拿到快照时先补一次快照再跑。
+local function runTestById(id)
+    if id == "" then id = nil end
+    local function pick()
+        local list = (view.snap and view.snap.config and view.snap.config.providers) or {}
+        local target = nil
+        for _, p in ipairs(list) do
+            if id == nil or p.id == id then target = target or p end
+        end
+        if target then
+            testProvider(target)
+        else
+            view.test = { id = tostring(id or "?"), ok = false,
+                          text = L("panel.providers.empty") }
+            render()
+        end
+    end
+    if view.snap and view.snap.config and (view.snap.config.providers or {})[1] then
+        pick()
+    else
+        hub.snapshot({}, function(snap) view.snap = snap; pick() end)
+    end
+end
 
+--- 打开面板时的上下文：让脚本/栏按钮直接定位到某一页，
+---   noctalia msg panel-open ylxc/llm-hub:console providers
+---   noctalia msg panel-open ylxc/llm-hub:console test:deepseek
+local function applyContext(ctx)
+    if type(ctx) ~= "string" or ctx == "" then return end
+    local cmd, arg = ctx:match("^%s*([%w_%-]+)%s*[:=]?%s*(%S*)")
+    cmd = (cmd or ""):lower()
+    if cmd == "providers" or cmd == "provider" then
+        view.tab = "providers"
+        view.editing = (arg ~= "" and arg) or nil
+        render()
+    elseif cmd == "test" then
+        view.tab = "providers"
+        runTestById(arg)
+    elseif cmd == "logs" then
+        view.tab = "logs"
+        fetchLogs()
+    elseif cmd == "overview" or cmd == "rules" or cmd == "ask" then
+        view.tab = cmd
+        render()
+    end
+end
+
+-- ── 宿主回调 ────────────────────────────────────────────────────────────────
 function onOpen(context)
     noctalia.setUpdateInterval(math.max(1000, hub.setting("poll_interval_ms")))
     if not view.watched then
@@ -868,6 +939,7 @@ function onOpen(context)
     render()
     refresh()
     if view.tab == "logs" then fetchLogs() end
+    applyContext(context)
 end
 
 function onClose()
@@ -902,8 +974,13 @@ function onKey(chord, pressed)
 end
 
 function onIpc(event, payload)
-    if tostring(event):lower() == "refresh" then
+    local ev = tostring(event or ""):lower()
+    if ev == "refresh" then
         refresh()
         render()
+    elseif ev == "test" then
+        -- noctalia msg plugin ylxc/llm-hub:console <target> test deepseek
+        view.tab = "providers"
+        runTestById(type(payload) == "string" and payload or nil)
     end
 end
