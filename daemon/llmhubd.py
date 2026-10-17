@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -641,21 +642,43 @@ def _set_path(cfg, dotted: str, value) -> None:
         cur[last] = value
 
 
-def _get_path(cfg, dotted: str):
+def _del_path(cfg, dotted: str):
+    """删除配置里的一个键（列表下标 / id 均可），返回是否真删掉了东西。"""
+    parts = [p for p in dotted.split(".") if p]
+    if not parts:
+        raise ValueError("空键名")
     cur = cfg
-    for p in [p for p in dotted.split(".") if p]:
+    for p in parts[:-1]:
         key = _key_of(cur, p)
         if key is None:
-            return None
-        try:
+            return False
+        if isinstance(cur, list):
+            if key >= len(cur):
+                return False
             cur = cur[key]
-        except (KeyError, IndexError, TypeError):
-            return None
-    return cur
+        else:
+            if p not in cur or not isinstance(cur[p], (dict, list)):
+                return False
+            cur = cur[p]
+    last = _key_of(cur, parts[-1])
+    if last is None:
+        return False
+    if isinstance(cur, list):
+        if last >= len(cur):
+            return False
+        cur.pop(last)
+        return True
+    if last in cur:
+        del cur[last]
+        return True
+    return False
 
 
 def cmd_set(args) -> int:
-    """改配置里的任意一个键：`llmhubd set server.port 8899`。"""
+    """改配置里的任意一个键：`llmhubd set server.port 8899`。
+
+    `--json null` 表示删除该键（面板把筛选条件设回「不限」时用）。
+    """
     path = args.config or default_config_path()
     store = ConfigStore(path)
     if not os.path.exists(path):
@@ -668,15 +691,35 @@ def cmd_set(args) -> int:
             return 2
     else:
         value = _coerce(args.value)
+    removed = {"hit": False}
     try:
-        store.mutate(lambda cfg: _set_path(cfg, args.key, value))
+        if value is None:
+            def fn(cfg):
+                removed["hit"] = _del_path(cfg, args.key)
+            store.mutate(fn)
+        else:
+            store.mutate(lambda cfg: _set_path(cfg, args.key, value))
     except ValueError as e:
         print(f"✗ {e}")
         return 2
     cur = _get_path(store.snapshot(), args.key)
-    print(json.dumps({"ok": True, "key": args.key, "value": cur, "path": path},
+    print(json.dumps({"ok": True, "key": args.key, "value": cur,
+                      "removed": bool(value is None and removed["hit"]), "path": path},
                      ensure_ascii=False))
     return 0
+
+
+def _get_path(cfg, dotted: str):
+    cur = cfg
+    for p in [p for p in dotted.split(".") if p]:
+        key = _key_of(cur, p)
+        if key is None:
+            return None
+        try:
+            cur = cur[key]
+        except (KeyError, IndexError, TypeError):
+            return None
+    return cur
 
 def cmd_provider_add(args) -> int:
     """新增一个 provider（面板「添加服务商」按钮调它）。"""
@@ -755,6 +798,178 @@ def cmd_provider_remove(args) -> int:
         print(f"✗ {e}")
         return 2
     print(json.dumps({"ok": True, "removed": removed["id"], "path": path}, ensure_ascii=False))
+    return 0
+
+
+def _csv(raw) -> list:
+    """把 `a,b,c` 或可重复参数转成干净列表。"""
+    if raw is None:
+        return []
+    items = raw if isinstance(raw, (list, tuple)) else [raw]
+    out: list[str] = []
+    for it in items:
+        for piece in str(it).replace("，", ",").split(","):
+            piece = piece.strip()
+            if piece and piece not in out:
+                out.append(piece)
+    return out
+
+
+TACTICS = ("listed", "priority", "cheapest", "fastest", "least_used", "random", "round_robin")
+
+
+def _tactic(raw) -> str:
+    """校验排序策略名（路由器的未知策略会静默退化为 priority，这里直接报错更清楚）。"""
+    name = (raw or "priority").strip().lower()
+    if name not in TACTICS:
+        raise ValueError(f"未知排序策略 '{raw}'；可用：{'/'.join(TACTICS)}")
+    return name
+
+
+def _rule_index(rules: list, target: str):
+    """按 id 或下标定位一条规则；找不到返回 None。"""
+    t = str(target).strip()
+    if t.lstrip("-").isdigit():
+        i = int(t)
+        return i if -len(rules) <= i < len(rules) else None
+    return next((i for i, r in enumerate(rules) if str(r.get("id", "")) == t), None)
+
+
+def cmd_rule_add(args) -> int:
+    """新增一条路由规则（面板「添加规则」按钮调它）。"""
+    path = args.config or default_config_path()
+    store = ConfigStore(path)
+    if not os.path.exists(path):
+        store.save(dict(DEFAULT_CONFIG))
+    created = {"id": ""}
+
+    def fn(cfg):
+        rules = cfg.setdefault("rules", [])
+        rid = (args.id or "").strip()
+        used = {str(r.get("id", "")) for r in rules}
+        if not rid:
+            n = 1
+            while f"rule-{n}" in used:
+                n += 1
+            rid = f"rule-{n}"
+        if rid in used:
+            raise ValueError(f"规则 id '{rid}' 已存在")
+        when: dict = {}
+        models = _csv(args.model)
+        if models:
+            when["model"] = models
+        for key, val in (("provider", args.provider), ("scenario", args.scenario),
+                         ("tags", args.tags), ("protocol", args.protocol)):
+            vals = _csv(val)
+            if vals:
+                when[key] = vals
+        if args.has_tools:
+            when["has_tools"] = True
+        if args.has_image:
+            when["has_image"] = True
+        if args.min_prompt_tokens is not None:
+            when["min_prompt_tokens"] = args.min_prompt_tokens
+        if args.max_prompt_tokens is not None:
+            when["max_prompt_tokens"] = args.max_prompt_tokens
+        if args.prompt_regex:
+            try:
+                re.compile(args.prompt_regex)
+            except re.error as e:
+                raise ValueError(f"prompt_regex 不是合法正则：{e}")
+            when["prompt_regex"] = args.prompt_regex
+        route = {
+            "providers": _csv(args.providers) or ["*"],
+            "tactic": _tactic(args.tactic),
+
+            "fallback": not args.no_fallback,
+        }
+        if args.retries is not None:
+            route["retries"] = args.retries
+        if args.target_model:
+            route["model"] = args.target_model
+        entry = {"id": rid, "enabled": not args.disabled, "when": when, "route": route}
+        if args.description:
+            entry["description"] = args.description
+        if args.at is not None:
+            rules.insert(max(0, min(args.at, len(rules))), entry)
+        else:
+            rules.append(entry)
+        created["id"] = rid
+
+    try:
+        store.mutate(fn)
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 2
+    cfg = store.snapshot()
+    rules = cfg.get("rules") or []
+    index = next((i for i, r in enumerate(rules) if str(r.get("id")) == created["id"]), -1)
+    print(json.dumps({"ok": True, "id": created["id"], "index": index,
+                      "rule": rules[index] if index >= 0 else None, "path": path},
+                     ensure_ascii=False))
+    return 0
+
+
+def cmd_rule_remove(args) -> int:
+    """按 id 或下标删除一条路由规则。"""
+    path = args.config or default_config_path()
+    store = ConfigStore(path)
+    target = str(args.target).strip()
+    removed = {"id": ""}
+
+    def fn(cfg):
+        rules = cfg.get("rules") or []
+        idx = _rule_index(rules, target)
+        if idx is None:
+            raise ValueError(f"没有找到路由规则：{target}")
+        removed["id"] = str(rules[idx].get("id", ""))
+        rules.pop(idx)
+        cfg["rules"] = rules
+
+    try:
+        store.mutate(fn)
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 2
+    print(json.dumps({"ok": True, "removed": removed["id"], "path": path}, ensure_ascii=False))
+    return 0
+
+
+def cmd_rule_move(args) -> int:
+    """上移/下移一条路由规则（规则按顺序匹配，越靠前优先级越高）。"""
+    path = args.config or default_config_path()
+    store = ConfigStore(path)
+    target = str(args.target).strip()
+    direction = str(args.direction).strip().lower()
+    if direction in ("up", "上", "上移"):
+        step = -1
+    elif direction in ("down", "下", "下移"):
+        step = 1
+    else:
+        print(f"✗ 方向只能是 up/down：{args.direction}")
+        return 2
+    moved = {"id": "", "index": -1, "moved": False}
+
+    def fn(cfg):
+        rules = cfg.get("rules") or []
+        idx = _rule_index(rules, target)
+        if idx is None:
+            raise ValueError(f"没有找到路由规则：{target}")
+        new = idx + step
+        if 0 <= new < len(rules):
+            rules[idx], rules[new] = rules[new], rules[idx]
+            moved["moved"] = True
+        moved["id"] = str(rules[new if moved["moved"] else idx].get("id", ""))
+        moved["index"] = new if moved["moved"] else idx
+        cfg["rules"] = rules
+
+    try:
+        store.mutate(fn)
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 2
+    print(json.dumps({"ok": True, "id": moved["id"], "index": moved["index"],
+                      "moved": moved["moved"], "path": path}, ensure_ascii=False))
     return 0
 
 
@@ -934,7 +1149,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = add("set", cmd_set, "修改配置里的一个键（如 server.port）")
     s.add_argument("key", help="点分路径，如 server.api_key / providers.0.enabled")
     s.add_argument("value")
-    s.add_argument("--json", action="store_true", help="value 按 JSON 解析（强制类型）")
+    s.add_argument("--json", action="store_true", help="value 按 JSON 解析（强制类型）；--json null 表示删除该键")
+
     s = add("provider-add", cmd_provider_add, "新增一个 provider（面板「添加服务商」用）")
     s.add_argument("--id", help="provider id（默认自动取 provider-N）")
     s.add_argument("--type", default="openai", help="openai / anthropic / gemini / ollama / mock")
@@ -946,6 +1162,31 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--disabled", action="store_true", help="建好后先保持停用")
     s = add("provider-remove", cmd_provider_remove, "按 id 或下标删除 provider")
     s.add_argument("target")
+    s = add("rule-add", cmd_rule_add, "新增一条路由规则（面板「添加规则」用）")
+    s.add_argument("--id", help="规则 id（默认自动取 rule-N）")
+    s.add_argument("--description")
+    s.add_argument("--model", action="append", help="匹配请求的模型名，可重复、支持 glob")
+    s.add_argument("--provider", action="append", help="匹配请求指定的 provider，可重复")
+    s.add_argument("--scenario", action="append", help="匹配场景前缀，可重复")
+    s.add_argument("--tags", action="append", help="匹配请求标签（X-LLMHub-Tags），可重复")
+    s.add_argument("--protocol", action="append", help="匹配入站协议，可重复")
+    s.add_argument("--has-tools", action="store_true", help="只匹配带工具的请求")
+    s.add_argument("--has-image", action="store_true", help="只匹配带图片的请求")
+    s.add_argument("--min-prompt-tokens", type=int)
+    s.add_argument("--max-prompt-tokens", type=int)
+    s.add_argument("--prompt-regex", help="对提示词做正则匹配")
+    s.add_argument("--providers", help="候选链，逗号分隔（如 deepseek,anthropic;* 表示兜底）")
+    s.add_argument("--tactic", help="listed/priority/cheapest/fastest/least_used/random/round_robin")
+    s.add_argument("--retries", type=int)
+    s.add_argument("--target-model", help="转发给上游时改写成这个模型名")
+    s.add_argument("--no-fallback", action="store_true", help="候选链都失败时不走 default_route")
+    s.add_argument("--disabled", action="store_true", help="建好后先保持禁用")
+    s.add_argument("--at", type=int, help="插入位置（默认追加到末尾）")
+    s = add("rule-remove", cmd_rule_remove, "按 id 或下标删除路由规则")
+    s.add_argument("target")
+    s = add("rule-move", cmd_rule_move, "上移/下移路由规则（顺序即优先级）")
+    s.add_argument("target")
+    s.add_argument("direction", help="up / down")
     s = add("config", cmd_config, "打印当前配置（密钥打码）")
     s.add_argument("--json", action="store_true")
     add("port", cmd_port, "打印网关端口")

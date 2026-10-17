@@ -24,7 +24,10 @@ local view = {
     watched = false,
     dirty = false,
     draft = {},          -- 未保存的输入框内容：{ "url:<id>" = "…", "key:<id>" = …, "models:<id>" = … }
-    confirmRemove = nil, -- 两段式删除：先点一次记 id，再点一次才真删
+    confirmRemove = nil, -- 两段式删除：先点一次记 id，再点第二次才真删
+    ruleEditing = nil,    -- 正在编辑的规则 id；nil = 规则列表视图
+    ruleWait = nil,       -- 刚新增的规则 id：等快照刷新到它之前不要退回列表
+    confirmRule = nil,    -- 规则的删除确认 id
 }
 
 local function L(key, subst) return noctalia.tr(key, subst) end
@@ -583,39 +586,393 @@ local function whenSummary(when)
     return table.concat(parts, "  ")
 end
 
+-- ── 路由规则：列表 ⇄ 编辑 两级视图 ───────────────────────────────────
+
+local TACTICS = { "listed", "priority", "cheapest", "fastest", "least_used", "random", "round_robin" }
+
+--- 规则列表（来自配置快照）
+local function ruleList()
+    local cfg = (view.snap and view.snap.config) or {}
+    return cfg.rules or {}
+end
+
+local function ruleOf(id)
+    for _, r in ipairs(ruleList()) do
+        if r.id == id then return r end
+    end
+    return nil
+end
+
+--- 按点分路径取规则里的字段值
+local function fieldValue(r, path)
+    local cur = r
+    for seg in path:gmatch("[^.]+") do
+        if type(cur) ~= "table" then return nil end
+        cur = cur[seg]
+    end
+    return cur
+end
+
+local function fieldText(value)
+    if type(value) == "table" then return table.concat(value, ", ") end
+    if value == nil then return "" end
+    return tostring(value)
+end
+
+--- 编辑表单的文本字段：{草稿前缀, 配置路径, 翻译键, 是否多值}
+local RULE_FIELDS = {
+    { "rdesc", "description", "f_desc", false },
+    { "rmodel", "when.model", "f_model", true },
+    { "rprovider", "when.provider", "f_provider", true },
+    { "rtags", "when.tags", "f_tags", true },
+    { "rscenario", "when.scenario", "f_scenario", true },
+    { "rmintok", "when.min_prompt_tokens", "f_mintok", false },
+    { "rmaxtok", "when.max_prompt_tokens", "f_maxtok", false },
+    { "rregex", "when.prompt_regex", "f_regex", false },
+    { "rchain", "route.providers", "f_chain", true },
+}
+
+
+--- 统一的收尾：写提示 + 刷新快照 + 重绘
+local function ruleDone(label, code, okNote)
+    if code ~= 0 then
+        view.note = L("panel.failed", { label = label, detail = code })
+    else
+        view.note = okNote
+    end
+    refresh()
+    render()
+end
+
+local function setRuleEnabled(r, want)
+    local label = L("panel.rules.toggle")
+    view.note = L("panel.busy", { label = label })
+    render()
+    hub.setPath("rules." .. r.id .. ".enabled", want and "true" or "false", function(_, code)
+        ruleDone(label, code,
+                 want and L("panel.rules.now_on", { id = r.id }) or L("panel.rules.now_off", { id = r.id }))
+    end)
+end
+
+local function setRuleFallback(r, want)
+    local label = L("panel.rules.f_fallback")
+    view.note = L("panel.busy", { label = label })
+    render()
+    hub.setPath("rules." .. r.id .. ".route.fallback", want and "true" or "false", function(_, code)
+        ruleDone(label, code, L("panel.rules.saved", { id = r.id }))
+    end)
+end
+
+--- 工具要求：0 不限（删掉该条件）/ 1 必须带工具 / 2 必须不带工具
+local function setRuleTools(r, idx)
+    local label = L("panel.rules.f_tools")
+    local key = "rules." .. r.id .. ".when.has_tools"
+    view.note = L("panel.busy", { label = label })
+    render()
+    local function done(_, code) ruleDone(label, code, L("panel.rules.saved", { id = r.id })) end
+    if idx == 0 then
+        hub.unsetPath(key, done)
+    elseif idx == 1 then
+        hub.setPath(key, "true", done)
+    else
+        hub.setPath(key, "false", done)
+    end
+end
+
+local function setRuleTactic(r, idx)
+    local name = TACTICS[idx + 1]
+    if not name then return end
+    local label = L("panel.rules.f_tactic")
+    view.note = L("panel.busy", { label = label })
+    render()
+    hub.setPath("rules." .. r.id .. ".route.tactic", name, function(_, code)
+        ruleDone(label, code, L("panel.rules.saved", { id = r.id }))
+    end)
+end
+
+local function moveRule(r, dir)
+    local label = L("panel.rules.move")
+    view.note = L("panel.busy", { label = label })
+    render()
+    hub.ruleMove(r.id, dir, function(res, code)
+        if code ~= 0 or (type(res) == "table" and res.moved == false) then
+            ruleDone(label, 1, nil)
+            view.note = L("panel.rules.move_edge", { id = r.id })
+            render()
+        else
+            ruleDone(label, 0, L("panel.rules.moved", { id = r.id }))
+        end
+    end)
+end
+
+local function addRule()
+    local label = L("panel.rules.add")
+    view.note = L("panel.busy", { label = label })
+    render()
+    hub.ruleAdd({ disabled = true }, function(res, code)   -- 新规则先保持停用，填好条件再打开开关
+        if code == 0 and type(res) == "table" and res.id then
+            view.ruleEditing = res.id
+            view.ruleWait = res.id
+            view.note = L("panel.rules.added", { id = res.id })
+        else
+            view.note = L("panel.failed", { label = label, detail = code })
+        end
+        refresh()
+        render()
+    end)
+end
+
+local function removeRule(r)
+    if view.confirmRule ~= r.id then
+        view.confirmRule = r.id
+        view.note = L("panel.rules.remove_ask", { id = r.id })
+        render()
+        return
+    end
+    view.confirmRule = nil
+    local label = L("panel.rules.remove")
+    hub.ruleRemove(r.id, function(_, code)
+        if code == 0 then
+            view.ruleEditing = nil
+            for k in pairs(view.draft) do
+                if k:sub(-(#r.id + 1)) == ":" .. r.id then view.draft[k] = nil end
+            end
+        end
+        ruleDone(label, code, L("panel.rules.removed", { id = r.id }))
+    end)
+end
+
+--- 保存编辑视图里的文本字段：只提交与现值不同的字段，清空 = 删除该条件
+local function saveRule(r)
+    local ops = {}
+    for _, f in ipairs(RULE_FIELDS) do
+        local kind, path, isList = f[1], f[2], f[4]
+        local text = draftOf(kind, r.id)
+        if text ~= nil and text ~= fieldText(fieldValue(r, path)) then
+            local full = "rules." .. r.id .. "." .. path
+            local list = hub.splitList(text)
+            if text == "" or #list == 0 then
+                table.insert(ops, { full, "null", true })
+            elseif isList then
+                table.insert(ops, { full, hub.jsonEncode(list) or "[]", true })
+            elseif path:find("tokens") and tonumber(text) then
+                table.insert(ops, { full, tostring(math.floor(tonumber(text))), true })
+            else
+                table.insert(ops, { full, text, false })
+            end
+        end
+    end
+    if #ops == 0 then
+        view.note = L("panel.rules.nochange", { id = r.id })
+        render()
+        return
+    end
+    local label = L("panel.rules.save")
+    view.note = L("panel.busy", { label = label })
+    render()
+    hub.runOps(ops, function(_, failed)
+        if failed and failed > 0 then
+            ruleDone(label, failed, nil)
+            return
+        end
+        for _, f in ipairs(RULE_FIELDS) do view.draft[f[1] .. ":" .. r.id] = nil end
+        ruleDone(label, 0, L("panel.rules.saved", { id = r.id }))
+    end)
+end
+
+--- 列表视图的一行：名称 + 条件摘要 + 上移/下移 + 启停 + 编辑
+local function ruleRow(r)
+    local route = r.route or r
+    local enabled = r.enabled ~= false
+    local chain = #(route.providers or {}) > 0 and table.concat(route.providers, " → ") or "*"
+    return ui.row({ key = "rrow:" .. r.id, gap = 8, align = "center",
+                    fill = "surface_variant", radius = 8, padding = 8 }, {
+        ui.glyph({ name = enabled and "bolt" or "bolt-off", size = 14,
+                   color = enabled and "primary" or "on_surface_variant" }),
+        ui.column({ gap = 1, flexGrow = 1 }, {
+            ui.label({ text = r.id, fontSize = 12, fontWeight = "medium", color = "on_surface", maxLines = 1 }),
+            ui.label({ text = string.format("%s · %s · → %s", route.tactic or "priority",
+                       whenSummary(r.when), chain),
+                       fontSize = 10, color = "on_surface_variant", maxLines = 1 }),
+        }),
+        ui.button({ glyph = "arrow-up", controlSize = "sm", variant = "ghost",
+                    tooltip = L("panel.rules.move_up"), onClick = function() moveRule(r, "up") end }),
+        ui.button({ glyph = "arrow-down", controlSize = "sm", variant = "ghost",
+                    tooltip = L("panel.rules.move_down"), onClick = function() moveRule(r, "down") end }),
+        ui.toggle({ checked = enabled, onChange = function(v) setRuleEnabled(r, v == "true") end }),
+        ui.button({ glyph = "pencil", controlSize = "sm", variant = "ghost",
+                    tooltip = L("panel.rules.edit"),
+                    onClick = function()
+                        view.ruleEditing = r.id
+                        view.confirmRule = nil
+                        view.note = nil
+                        render()
+                    end }),
+    })
+end
+
+--- 一行文本字段：标签在上、输入框在下（中文长标签放不进 fieldRow 的固定宽度）
+local function ruleField(r, kind, path, labelKey, isList)
+    local stored = draftOf(kind, r.id)
+    local value = stored or fieldText(fieldValue(r, path))
+    local hint = ""
+    if kind == "rmodel" then hint = L("panel.rules.model_hint")
+    elseif kind == "rchain" then hint = L("panel.rules.chain_hint") end
+    return ui.column({ gap = 2, flexGrow = 1 }, {
+        ui.label({ text = L("panel.rules." .. labelKey), fontSize = 10,
+                   color = "on_surface_variant", maxLines = 1 }),
+        ui.input({ key = kind .. ":" .. r.id, value = value, placeholder = hint,
+                   controlSize = "sm", flexGrow = 1, submitOnEnter = true,
+                   onChange = function(v) setDraft(kind, r.id, v) end,
+                   onSubmit = function(v) setDraft(kind, r.id, v); saveRule(r) end }),
+    })
+end
+
+--- 编辑视图：一张表单卡片
+local function ruleCard(r)
+    local route = r.route or r
+    local kids = {
+        ui.row({ gap = 8, align = "center" }, {
+            ui.glyph({ name = "bolt", size = 14, color = "primary" }),
+            ui.label({ text = r.id, fontSize = 12, fontWeight = "medium", flexGrow = 1,
+                       color = "on_surface", maxLines = 1 }),
+            ui.toggle({ checked = r.enabled ~= false,
+                        onChange = function(v) setRuleEnabled(r, v == "true") end }),
+        }),
+        ui.label({ text = L("panel.rules.edit_hint"), fontSize = 10,
+                   color = "on_surface_variant", maxLines = 2, height = 30 }),
+    }
+    local function fld(i)
+        local f = RULE_FIELDS[i]
+        return ruleField(r, f[1], f[2], f[3], f[4])
+    end
+    local function pair(i, j) return ui.row({ gap = 8, align = "start" }, { fld(i), fld(j) }) end
+    table.insert(kids, pair(1, 2))   -- 描述 / 模型匹配
+    table.insert(kids, pair(3, 4))   -- 服务商匹配 / 标签匹配
+    table.insert(kids, pair(5, 8))   -- 场景匹配 / 提示词正则
+    table.insert(kids, pair(6, 7))   -- 最小 / 最大 prompt tokens
+    table.insert(kids, fld(9))       -- 候选链（整行）
+    -- 工具要求 / 排序策略（并排）
+    local toolsIdx = 0
+    if r.when and r.when.has_tools == true then toolsIdx = 1
+    elseif r.when and r.when.has_tools == false then toolsIdx = 2 end
+    local tacticIdx = 0
+    local labels = {}
+    for i, t in ipairs(TACTICS) do
+        table.insert(labels, L("panel.rules.tactic_" .. t))
+        if t == (route.tactic or "priority") then tacticIdx = i - 1 end
+    end
+    table.insert(kids, ui.row({ gap = 8, align = "start" }, {
+        ui.column({ gap = 2, flexGrow = 1 }, {
+            ui.label({ text = L("panel.rules.f_tools"), fontSize = 10, color = "on_surface_variant" }),
+            ui.select({ key = "rtools:" .. r.id, controlSize = "sm", flexGrow = 1, selectedIndex = toolsIdx,
+                        options = { L("panel.rules.tools_any"), L("panel.rules.tools_yes"), L("panel.rules.tools_no") },
+                        onChange = function(idx) setRuleTools(r, tonumber(idx) or 0) end }),
+        }),
+        ui.column({ gap = 2, flexGrow = 1 }, {
+            ui.label({ text = L("panel.rules.f_tactic"), fontSize = 10, color = "on_surface_variant" }),
+            ui.select({ key = "rtactic:" .. r.id, controlSize = "sm", flexGrow = 1, selectedIndex = tacticIdx,
+                        options = labels,
+                        onChange = function(idx) setRuleTactic(r, tonumber(idx) or 0) end }),
+        }),
+    }))
+    -- 失败回退
+    table.insert(kids, ui.row({ gap = 8, align = "center" }, {
+        ui.toggle({ checked = route.fallback ~= false,
+                    onChange = function(v) setRuleFallback(r, v == "true") end }),
+        ui.label({ text = L("panel.rules.f_fallback"), fontSize = 10, flexGrow = 1,
+                   color = "on_surface_variant", maxLines = 1 }),
+    }))
+    -- 保存 / 删除
+    table.insert(kids, ui.row({ gap = 8, align = "center" }, {
+        ui.button({ text = L("panel.rules.save"), glyph = "check", variant = "primary",
+                    controlSize = "md", onClick = function() saveRule(r) end }),
+        ui.button({ text = view.confirmRule == r.id and L("panel.rules.remove_confirm") or L("panel.rules.remove"),
+                    glyph = "trash", variant = view.confirmRule == r.id and "destructive" or "ghost",
+                    controlSize = "md", onClick = function() removeRule(r) end }),
+    }))
+    return ui.column({ fill = "surface_variant", radius = 8, padding = 10, gap = 6 }, kids)
+end
+
 local function tabRules()
     local cfg = (view.snap and view.snap.config) or {}
-    local children = { sectionTitle(L("panel.rules.title"), "arrows-split-2") }
 
-    local function ruleCard(title, tactic, providers, when, note)
-        local provs = {}
-        for _, s in ipairs(providers or {}) do
-            table.insert(provs, tostring(s))
+    -- 编辑视图
+    if view.ruleEditing then
+        local r = ruleOf(view.ruleEditing)
+        if r then
+            view.ruleWait = nil
+            return ui.column({ gap = 8, padding = 12 }, {
+                ui.row({ gap = 8, align = "center" }, {
+                    ui.button({ glyph = "arrow-left", controlSize = "sm", variant = "ghost",
+                                tooltip = L("panel.rules.back"),
+                                onClick = function()
+                                    view.ruleEditing = nil
+                                    view.confirmRule = nil
+                                    render()
+                                end }),
+                    ui.label({ text = L("panel.rules.edit_title", { id = r.id }), fontSize = 13,
+                               fontWeight = "medium", flexGrow = 1, color = "on_surface", maxLines = 1 }),
+                    ui.button({ glyph = "arrow-narrow-up", controlSize = "sm", variant = "ghost",
+                                tooltip = L("panel.rules.move_up"), onClick = function() moveRule(r, "up") end }),
+                    ui.button({ glyph = "arrow-narrow-down", controlSize = "sm", variant = "ghost",
+                                tooltip = L("panel.rules.move_down"), onClick = function() moveRule(r, "down") end }),
+                }),
+                ruleCard(r),
+            })
         end
-        return ui.column({ fill = "surface_variant", radius = 8, padding = 8, gap = 3 }, {
-            ui.row({ gap = 8, align = "center" }, {
-                ui.glyph({ name = "bolt", size = 13, color = "primary" }),
-                ui.label({ text = title, fontSize = 12, fontWeight = "medium", flexGrow = 1,
-                           color = "on_surface", maxLines = 1 }),
-                ui.label({ text = tactic or "priority", fontSize = 10, color = "primary" }),
-            }),
-            ui.label({ text = L("panel.rules.when") .. " " .. when, fontSize = 10,
-                       color = "on_surface_variant", maxLines = 2, height = 30 }),
-            ui.label({ text = "→ " .. (#provs > 0 and table.concat(provs, " → ") or "*"),
-                       fontSize = 10, color = "on_surface", maxLines = 2 }),
-            ui.label({ text = note or "", fontSize = 10, color = "on_surface_variant",
-                       visible = note ~= nil, maxLines = 1 }),
-        })
+        if view.ruleWait == view.ruleEditing then
+            -- 刚新增的规则：等快照刷新到它（refresh 的渲染会进编辑器），期间不要退回列表
+            return ui.column({ gap = 8, padding = 12 }, {
+                ui.row({ gap = 8, align = "center" }, {
+                    ui.button({ glyph = "arrow-left", controlSize = "sm", variant = "ghost",
+                                tooltip = L("panel.rules.back"),
+                                onClick = function()
+                                    view.ruleEditing, view.ruleWait = nil, nil
+                                    render()
+                                end }),
+                    ui.label({ text = L("panel.rules.edit_title", { id = view.ruleEditing }), fontSize = 13,
+                               fontWeight = "medium", flexGrow = 1, color = "on_surface", maxLines = 1 }),
+                }),
+                ui.label({ text = L("panel.loading"), fontSize = 11, color = "on_surface_variant" }),
+            })
+        end
+        view.ruleEditing = nil   -- 规则已被删掉，退回列表
     end
 
-    for _, r in ipairs(cfg.rules or {}) do
-        local route = r.route or r
-        table.insert(children, ruleCard(r.id or "?", route.tactic, route.providers,
-                                        whenSummary(r.when), r.description))
+    -- 列表视图
+    local children = { sectionTitle(L("panel.rules.title"), "arrows-split-2") }
+    table.insert(children, ui.label({ text = L("panel.rules.hint"), fontSize = 10,
+                                      color = "on_surface_variant", maxLines = 2, height = 30 }))
+    local rules = cfg.rules or {}
+    if #rules == 0 then
+        table.insert(children, ui.label({ text = L("panel.rules.empty"), fontSize = 11,
+                                          color = "on_surface_variant" }))
     end
+    for _, r in ipairs(rules) do
+        table.insert(children, ruleRow(r))
+    end
+    table.insert(children, ui.row({ gap = 8, align = "center", padding = 4 }, {
+        ui.button({ text = L("panel.rules.add"), glyph = "plus", variant = "primary",
+                    controlSize = "md", onClick = function() addRule() end }),
+        ui.label({ text = L("panel.rules.add_hint"), fontSize = 10, flexGrow = 1,
+                   color = "on_surface_variant", maxLines = 2 }),
+    }))
+
+    -- 默认路由（无规则命中时的兜底）
     local d = cfg.default_route or {}
-    table.insert(children, ruleCard(L("panel.rules.default"), d.tactic, d.providers, L("panel.rules.always"),
-                                    d.fallback and L("panel.rules.fallback_on") or nil))
+    table.insert(children, ui.column({ fill = "surface_variant", radius = 8, padding = 8, gap = 3 }, {
+        ui.row({ gap = 8, align = "center" }, {
+            ui.glyph({ name = "route", size = 13, color = "primary" }),
+            ui.label({ text = L("panel.rules.default"), fontSize = 12, fontWeight = "medium",
+                       flexGrow = 1, color = "on_surface", maxLines = 1 }),
+            ui.label({ text = d.tactic or "priority", fontSize = 10, color = "primary" }),
+        }),
+        ui.label({ text = "→ " .. (d.providers and #d.providers > 0 and table.concat(d.providers, " → ") or "*"),
+                   fontSize = 10, color = "on_surface", maxLines = 2 }),
+        ui.label({ text = L("panel.rules.fallback_on"), fontSize = 10, color = "on_surface_variant",
+                   visible = d.fallback == true, maxLines = 1 }),
+    }))
 
     local aliases = cfg.aliases or {}
     local akeys = {}
@@ -919,7 +1276,17 @@ local function applyContext(ctx)
     elseif cmd == "logs" then
         view.tab = "logs"
         fetchLogs()
-    elseif cmd == "overview" or cmd == "rules" or cmd == "ask" then
+    elseif cmd == "rules" then
+        view.tab = "rules"
+        view.ruleEditing = nil
+        view.ruleWait = nil
+        render()
+    elseif cmd == "rule" then
+        view.tab = "rules"
+        view.ruleEditing = (arg ~= "" and arg) or nil
+        view.ruleWait = nil
+        render()
+    elseif cmd == "overview" or cmd == "ask" then
         view.tab = cmd
         render()
     end

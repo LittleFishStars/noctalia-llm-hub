@@ -11,6 +11,7 @@
 - **规则自动路由**：按模型名、是否带工具、是否带图、prompt 长度、协议、标签、路径正则等条件匹配规则，规则内可用 `priority` / `cheapest` / `fastest` / `least_used` / `round_robin` / `random` / `listed` 七种挑选策略，并带自动降级（fallback）与重试。
 - **协议双向翻译**：入站 `OpenAI /chat/completions`、`Anthropic /v1/messages`、`OpenAI /v1/responses` 三种协议任意进、任意出；OpenAI 请求打到 Anthropic 上游、Claude Code 打到 Gemini 上游都可以（含 SSE 流式、工具调用、多模态图片、用量统计）。
 - **面板里改 provider**：控制台 `Provider` 页签两级视图（列表 ⇄ 编辑），可直接改类型、地址、密钥、模型，也能开关、连通性测试、新增/删除服务商，改完即时热重载，不用手改 JSON。
+- **面板里改路由规则**：控制台 `路由规则` 页签同样是列表 ⇄ 编辑两级视图——一行一条规则，右侧开关直接启停、`↑`/`↓` 调优先级（越靠前越先命中）、铅笔进编辑器改条件与候选链，底部「+ 添加规则」、编辑器内可删除规则，全程不用手改 JSON。
 - **思考内容透传**：DeepSeek 的 `reasoning_content`、Claude 的 `thinking` 块、Gemini 的 `thought` 都会归一成 `reasoning` 并按客户端协议原样输出（非流式与流式都支持）。
 - **本地接口**：默认在 `localhost:8787` 上同时监听 `127.0.0.1` 与 `::1`（IPv4/IPv6 都能连），OpenAI 兼容，任何 SDK 改一行 `base_url` 即可接入；另有 `/admin/ask` 这种「一句话拿文本」的最简接口。
 - **CLI**：`llmhubd start/stop/status/ask/route/models/stats/logs/test/…`，不需要写代码就能用；`bin/llmhub` 是免安装入口。
@@ -24,6 +25,7 @@
 - [快速开始](#快速开始)
 - [本地接口](#本地接口)
 - [配置](#配置)
+- [在控制台面板里改规则](#在控制台面板里改规则)
 - [路由规则](#路由规则)
 - [Provider 适配器](#provider-适配器)
 - [协议翻译](#协议翻译)
@@ -287,6 +289,40 @@ curl -s http://127.0.0.1:8787/admin/ask -H 'Content-Type: application/json' \
   "route": { "providers": ["mock", "*"], "tactic": "cheapest", "fallback": true } }
 ```
 
+### 在控制台面板里改规则
+
+`路由规则` 页签和 Provider 页一样是**列表 ⇄ 编辑两级视图**，整页不需要滚动：
+
+1. **列表视图**：一行一条规则，显示 `规则 id` + `tactic · 触发条件 · → 候选链`；右侧依次是 `↑`（上移，更优先）、`↓`、启停开关、铅笔。**规则顺序就是优先级**，第一条命中的规则生效。列表下面是 `+ 添加规则`，再往下是只读的默认路由、模型别名、场景端点。
+2. **编辑视图**（点铅笔进入）：左上角 `← 返回列表`，右侧 `↑`/`↓` 也能直接调顺序，中间是一张规则卡片：
+
+| 表单项 | 写到配置里的位置 | 说明 |
+| --- | --- | --- |
+| 描述 | `description` | 只是给人看的备注 |
+| 模型匹配 | `when.model` | 逗号分隔、支持 glob，如 `*-mini, deepseek-*` |
+| 服务商匹配 | `when.provider` | 限定 provider id |
+| 标签匹配 | `when.tags` | 需要全部命中，对应 `X-LLMHub-Tags` |
+| 场景匹配 | `when.scenario` | 对应 `/s/<场景>/…` |
+| 最小 / 最大 prompt tokens | `when.min_prompt_tokens` / `when.max_prompt_tokens` | 按估算长度分档选模型（长上下文走贵模型、短问题走便宜模型） |
+| 提示词正则 | `when.prompt_regex` | 对请求文本做正则 |
+| 候选链 | `route.providers` | 逗号分隔的 provider id，支持 `*`；按顺序尝试 |
+| 工具要求 | `when.has_tools` | `不限` / `必须带工具` / `必须不带工具` |
+| 候选排序策略 | `route.tactic` | 七种 tactic 任选 |
+| 失败回退 | `route.fallback` | 关掉就只试第一个候选 |
+
+表单里的文本字段**留空 = 不限**（会把这个条件从配置里删掉）；底部 `保存` 只提交改动过的字段，`删除规则` 是两段式确认（点两次）。点 `+ 添加规则` 新建的规则**先保持停用**（无条件命中一切 + 候选链 `*` 会很霸道），填好条件和候选链后再打开卡片右上角的开关。
+
+保存同样写回 `config.json` 并由网关按 mtime 热重载，**运行中即时生效**。等价的手工方式：
+
+```bash
+./bin/llmhub rule-add --id long-ctx --model "claude-*,*-128k" --providers "anthropic,openrouter" --tactic cheapest
+./bin/llmhub set rules.long-ctx.route.tactic fastest                  # 改单个字段
+./bin/llmhub set rules.long-ctx.when.model '["gpt-4o","o3-*"]' --json  # 多值字段
+./bin/llmhub set rules.long-ctx.when.min_prompt_tokens --json null    # 清空某个条件（留空即不限）
+./bin/llmhub rule-move long-ctx up                                   # 调优先级
+./bin/llmhub rule-remove long-ctx                                    # 删规则
+```
+
 ### 别名与场景
 
 - `aliases`：把 `fast` 这种名字映射到 `"provider:model"`。请求 `model: "fast"` 时直接钉到该 provider（不再参与 tactic 重排）。
@@ -395,9 +431,12 @@ provider 字段：
 | `enable <id>` / `disable <id>` | 开关 provider（运行中即时生效并写回配置） |
 | `test <id>` | 连通性测试（`-p` 自定义 prompt、`-m` 指定模型；不带 `-m` 时自动选该 provider 的第一个具体模型、`--json`） |
 | `init` / `config` / `port` / `doctor` | 写配置模板 / 打印配置（密钥打码）/ 打印端口 / 环境自检 |
-| `set <点分键> <值>` | 改配置，支持数组下标与 **id 定位**：`set providers.1.enabled true`、`set providers.deepseek.api_key sk-xxx`、`set providers.acme.models '["a","b"]' --json` |
+| `set <点分键> <值>` | 改配置，支持数组下标与 **id 定位**（`--json` 传 JSON 值，`--json null` = 删掉这个键）：`set providers.1.enabled true`、`set providers.deepseek.api_key sk-xxx`、`set providers.acme.models '["a","b"]' --json` |
 | `provider-add` | 新增服务商：`provider-add --type anthropic --id acme --label 公司网关 --base-url https://… --key ${ACME_KEY} --model a --model b --priority 5`；默认 `type=openai`、`models=[]`（空 = 暂不参与路由） |
 | `provider-remove <id\|下标>` | 删除服务商：`provider-remove acme` |
+| `rule-add` | 新增路由规则：`rule-add --id long-ctx --model "claude-*" --providers "anthropic,openrouter" --tactic cheapest`；常用 flag：`--description` `--model` `--provider` `--scenario` `--tags` `--protocol` `--has-tools` `--has-image` `--min-prompt-tokens` `--max-prompt-tokens` `--prompt-regex` `--providers` `--tactic` `--retries` `--target-model` `--no-fallback` `--disabled` `--at <下标>` |
+| `rule-move <id\|下标> up\|down` | 调整规则顺序（顺序即优先级） |
+| `rule-remove <id\|下标>` | 删除规则：`rule-remove long-ctx` |
 
 ---
 
@@ -408,7 +447,7 @@ provider 字段：
 | 入口 | 文件 | 作用 |
 | --- | --- | --- |
 | `[[widget]] status`（`bar.luau`） | 状态栏 | 默认只有图标（运行中为强调色）+ 悬停详情 tooltip，不带任何计数；可选在图标旁显示平均延迟。左键开控制台，右键复制端点 |
-| `[[panel]] console`（`panel.luau`） | 控制台面板（660×800） | 概览 / Provider / 路由规则 / 问答 / 日志 五个页签：Provider 页签是**列表 ⇄ 编辑两级视图**（列表里一行一个服务商，直接开关、点铅笔进编辑视图改类型/地址/密钥/模型，底部「+ 添加服务商」，整页无需滚动）；另有启停、重启、重载配置、清日志、重置统计、提问、干跑路由、看请求日志 |
+| `[[panel]] console`（`panel.luau`） | 控制台面板（660×800） | 概览 / Provider / 路由规则 / 问答 / 日志 五个页签：Provider 页签是**列表 ⇄ 编辑两级视图**（列表里一行一个服务商，直接开关、点铅笔进编辑视图改类型/地址/密钥/模型，底部「+ 添加服务商」，整页无需滚动）；路由规则页签同样是**列表 ⇄ 编辑两级视图**（开关启停、`↑`/`↓` 调优先级、铅笔编辑条件与候选链、新增/删除规则）；另有启停、重启、重载配置、清日志、重置统计、提问、干跑路由、看请求日志 |
 | `[[shortcut]] toggle`（`shortcut.luau`） | 快捷键 | 一键启停网关（右键打开面板） |
 | `[[service]] hub`（`service.luau`） | 后台服务 | 轮询网关状态并发布到共享状态；处理 IPC 事件；按设置决定退出时是否停网关 |
 
@@ -424,10 +463,11 @@ noctalia msg plugin ylxc/llm-hub:console all test deepseek      # 面板里跑�
 noctalia msg panel-toggle ylxc/llm-hub:console
 noctalia msg panel-open ylxc/llm-hub:console providers        # 直接开在 Provider 页
 noctalia msg panel-open ylxc/llm-hub:console test:deepseek    # 开在 Provider 页并顺手测一下
+noctalia msg panel-open ylxc/llm-hub:console rule:long-ctx    # 开在规则编辑视图
 noctalia msg panel-open ylxc/llm-hub:console logs             # 直接开在日志页
 ```
 
-`panel-open` 的第二个参数（context）可以接 `overview` / `providers` / `providers:<id>` / `rules` / `ask` / `logs` / `test[:<id>]`，栏按钮或脚本可据此直接定位到某一页；面板的 `test` 事件同样支持带一个 provider id，跑完把结果直接显示在 Provider 页。
+`panel-open` 的第二个参数（context）可以接 `overview` / `providers` / `providers:<id>` / `rules` / `rule:<id>` / `ask` / `logs` / `test[:<id>]`，栏按钮或脚本可据此直接定位到某一页；面板的 `test` 事件同样支持带一个 provider id，跑完把结果直接显示在 Provider 页。
 
 插件把守护进程的端口/pid/日志放在 `pluginDataDir()`（跨插件更新存活），配置文件默认仍是 `~/.config/llm-hub/config.json`。
 
@@ -452,7 +492,7 @@ ylxc-llm-hub/
 │   ├── llmhub_adapters.py   # 上游适配器（openai/anthropic/gemini/ollama/mock）
 │   └── llmhub_canon.py      # 协议规范化与三种协议的序列化
 └── tests/
-    ├── smoke_test.py        # 网关端到端冒烟（56 项，无需联网）
+    ├── smoke_test.py        # 网关端到端冒烟（88 项，无需联网）
     └── translate_test.py    # 协议翻译矩阵（41 项，自带假上游）
 ```
 
@@ -463,11 +503,11 @@ ylxc-llm-hub/
 两套测试都**不需要联网、不需要任何 API key**（用 `type=mock` 的 provider 与本地假上游）：
 
 ```bash
-python3 tests/smoke_test.py       # 通过 56 项，失败 0 项
+python3 tests/smoke_test.py       # 通过 88 项，失败 0 项
 python3 tests/translate_test.py   # 通过 41 项，失败 0 项
 ```
 
-`smoke_test.py` 覆盖健康检查/鉴权、路由与 tactic、别名、场景前缀、流式响应头、统计分组、`/config` 打码、热重载、错误处理、优雅退出。
+`smoke_test.py` 覆盖健康检查/鉴权、路由与 tactic、别名、场景前缀、流式响应头、统计分组、`/config` 打码、热重载、错误处理、优雅退出，以及**路由规则的 CLI 增删改**（面板「添加规则 / 保存 / 开关 / 上移下移 / 删除」走的都是这些通路）。
 `translate_test.py` 起一个假上游服务器，逐个断言 OpenAI↔Anthropic↔Gemini↔Ollama 的请求翻译与响应翻译（含工具调用、图片、SSE、用量映射、思考内容透传）。
 
 Luau 侧：

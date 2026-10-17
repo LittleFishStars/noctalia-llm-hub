@@ -25,7 +25,7 @@ from llmhub_canon import CanonRequest, CanonResponse
 from llmhub_adapters import (ConfigError, HttpRequest, LineStream, UpstreamError, check_status,
                              get_adapter, http_request)
 
-VERSION = "1.2.4"
+VERSION = "1.2.5"
 CONFIG_VERSION = 1
 
 
@@ -762,6 +762,10 @@ class Router:
         probe = CanonRequest(**{**req.__dict__, "model": model})
         matched: dict | None = None
         for rule in scope_rules:
+            # 面板里可以把一条规则临时关掉（enabled=false）：关掉的规则不参与匹配，
+            # 但仍留在配置里，方便随时再打开。
+            if rule.get("enabled") is False:
+                continue
             if self._rule_matches(rule.get("when") or {}, probe):
                 matched = rule
                 break

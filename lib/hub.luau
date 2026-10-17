@@ -151,28 +151,37 @@ end
 
 --- 跑 CLI 并解析 JSON 输出。cb(table|nil, exitCode, rawStdout)
 --- 从可能混有人类可读行的输出里捞出末尾的 JSON 对象。
---- CLI 有的子命令先打一行「✓ provider:model 123ms」再打 JSON，整段 decode 必然失败；
---- 这里从每个 `{` 起点试到本段最后一个 `}`，取第一个能解出来的。
+--- CLI 有的子命令先打一行「✓ provider:model 123ms」再打 JSON，整段 decode 必然失败。
+--- 注意：这里必须限制 decode 次数——每试一个起点就要把剩余全文解一遍，
+--- 对大输出（config / logs --json）反复解会撑爆宿主给 luau 回调的 CPU 预算。
 local function pickJson(text)
     if not text or text == "" then return nil end
+    -- 大多数情况：整段就是 JSON
     local ok, val = pcall(noctalia.json.decode, text)
     if ok and type(val) == "table" then return val end
+    if not text:find("{", 1, true) then return nil end
 
-    local last = text:find("}", -1, true)
-    if not last then return nil end
+    local cands = {}
+    -- CLI 的 JSON 一定从某一行的行首开始：只收集行首的 `{`，最多取最后 3 个
     local starts = {}
-    local pos = 1
+    local init = 1
     while true do
-        local i = text:find("{", pos, true)
-        if not i then break end
-        table.insert(starts, i)
-        pos = i + 1
+        local _, stop = text:find("\n[ \t]*{", init)
+        if not stop then break end
+        table.insert(starts, stop)
+        init = stop + 1
+        if #starts > 16 then table.remove(starts, 1) end   -- 只留尾部，避免表无限增长
     end
-    for i = #starts, 1, -1 do
-        if starts[i] < last then
-            local ok2, val2 = pcall(noctalia.json.decode, text:sub(starts[i], last))
-            if ok2 and type(val2) == "table" then return val2 end
-        end
+    for i = #starts, math.max(1, #starts - 2), -1 do
+        table.insert(cands, text:sub(starts[i]))
+    end
+    -- 兼底：第一个 `{` 到最后一个 `}`
+    local first, last = text:find("{", 1, true), text:find("}", -1, true)
+    if first and last and last > first then table.insert(cands, text:sub(first, last)) end
+
+    for _, cand in ipairs(cands) do
+        local okc, valc = pcall(noctalia.json.decode, cand)
+        if okc and type(valc) == "table" then return valc end
     end
     return nil
 end
@@ -252,6 +261,50 @@ function M.providerRemove(id, cb)
     M.cliJson({ "provider-remove", tostring(id) }, function(res, code)
         if cb then cb(res, code) end
     end, 20000)
+end
+
+--- 新增一条路由规则：opts = { description, models = {…}, providers = {…}, tactic, tools }
+--- 用 llmhubd rule-add（能真的往 rules 数组里插，`set` 做不到）
+function M.ruleAdd(opts, cb)
+    opts = opts or {}
+    local args = { "rule-add" }
+    local function opt(flag, value)
+        if type(value) == "string" and value ~= "" then
+            table.insert(args, flag)
+            table.insert(args, value)
+        end
+    end
+    opt("--id", opts.id)
+    opt("--description", opts.description)
+    for _, m in ipairs(opts.models or {}) do opt("--model", m) end
+    for _, p in ipairs(opts.providers or {}) do opt("--provider", p) end
+    opt("--providers", opts.chain)
+    opt("--tactic", opts.tactic)
+    opt("--prompt-regex", opts.regex)
+    if opts.tools then table.insert(args, "--has-tools") end
+    if opts.disabled then table.insert(args, "--disabled") end
+    M.cliJson(args, function(res, code)
+        if cb then cb(res, code) end
+    end, 20000)
+end
+
+--- 删除路由规则（id 或下标）
+function M.ruleRemove(id, cb)
+    M.cliJson({ "rule-remove", tostring(id) }, function(res, code)
+        if cb then cb(res, code) end
+    end, 20000)
+end
+
+--- 上移/下移路由规则（dir = "up" | "down"；顺序即优先级）
+function M.ruleMove(id, dir, cb)
+    M.cliJson({ "rule-move", tostring(id), dir == "up" and "up" or "down" }, function(res, code)
+        if cb then cb(res, code) end
+    end, 20000)
+end
+
+--- 删除配置里的一个键（对应 `set <key> null --json`）
+function M.unsetPath(key, cb)
+    M.setPath(key, "null", cb, true)
 end
 
 --- 把 "a, b，c" 拆成 {"a","b","c"}（英文/中文逗号、分号、空白都当分隔符）

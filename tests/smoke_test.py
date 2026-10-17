@@ -398,6 +398,109 @@ def main() -> int:
         check("不带 --json 时 stdout 仍是人类可读行",
               "✓" in r3.stdout and as_json(r3.stdout) is None, r3.stdout[:100])
 
+        print("\n⑬ 路由规则可由 CLI 增删改（面板「添加规则」走同一条通路）")
+        r = run_cli("rule-add", "--id", "smoke-rule", "--description", "冒烟新增",
+                    "--model", "smoke-special", "--providers", "mock-cheap", "--tactic", "listed")
+        added = as_json(r.stdout)
+        check("rule-add 返回 JSON（含 id 与插入位置）",
+              bool(added) and added.get("id") == "smoke-rule" and added.get("index") == 3,
+              r.stdout[:160])
+        st, cfgv, _ = c.call("/config")
+        ids = [x.get("id") for x in (cfgv.get("rules") or [])]
+        check("新增的规则被热重载进配置", ids[-1:] == ["smoke-rule"], str(ids))
+        st, d, _ = c.call("/route?model=smoke-special")
+        check("新规则立刻生效（命中 mock-cheap）",
+              d.get("rule") == "smoke-rule" and d["candidates"][0]["provider"] == "mock-cheap",
+              json.dumps(d)[:200])
+
+        r = run_cli("set", "rules.smoke-rule.enabled", "false")
+        check("set 可以把规则置为停用", as_json(r.stdout) is not None, r.stdout[:120])
+        st, d, _ = c.call("/route?model=smoke-special")
+        check("停用的规则不再参与匹配", d.get("rule") != "smoke-rule", str(d.get("rule")))
+        run_cli("set", "rules.smoke-rule.enabled", "true")
+        st, d, _ = c.call("/route?model=smoke-special")
+        check("重新启用后恢复匹配", d.get("rule") == "smoke-rule", str(d.get("rule")))
+
+        run_cli("rule-add", "--id", "smoke-first", "--model", "smoke-special",
+                "--providers", "mock-primary", "--at", "0")
+        st, d, _ = c.call("/route?model=smoke-special")
+        check("插到最前面的规则优先命中", d.get("rule") == "smoke-first", str(d.get("rule")))
+        r = run_cli("rule-move", "smoke-first", "down")
+        moved = as_json(r.stdout)
+        check("rule-move 返回移动后的位置", bool(moved) and moved.get("moved") is True,
+              r.stdout[:120])
+        st, cfgv, _ = c.call("/config")
+        order = [x.get("id") for x in (cfgv.get("rules") or [])]
+        check("下移一位后顺序真的换了（顺序即优先级）",
+              order[:2] == ["tool-heavy", "smoke-first"], str(order))
+        st, d, _ = c.call("/route?model=smoke-special")
+        check("被越过的规则不匹配该模型，仍命中 smoke-first",
+              d.get("rule") == "smoke-first", str(d.get("rule")))
+
+        r = run_cli("rule-add", "--id", "smoke-bad", "--providers", "mock-primary",
+                    "--tactic", "cheapestest")
+        check("非法 tactic 被拒绝", r.returncode != 0 and as_json(r.stdout) is None,
+              r.stdout[:120])
+        r = run_cli("rule-add", "--id", "smoke-bad", "--providers", "mock-primary",
+                    "--prompt-regex", "(")
+        check("非法正则被拒绝", r.returncode != 0, r.stdout[:120])
+        r = run_cli("rule-add", "--id", "smoke-first", "--providers", "mock-primary")
+        check("重复规则 id 被拒绝", r.returncode != 0 and "已存在" in r.stdout, r.stdout[:120])
+
+        run_cli("set", "rules.smoke-rule.when.has_tools", "true")
+        st, cfgv, _ = c.call("/config")
+        cur = next((x for x in (cfgv.get("rules") or []) if x.get("id") == "smoke-rule"), {})
+        check("set 能给规则加筛选条件", (cur.get("when") or {}).get("has_tools") is True,
+              json.dumps(cur.get("when"), ensure_ascii=False))
+        r = run_cli("set", "rules.smoke-rule.when.has_tools", "--json", "null")
+        removed = as_json(r.stdout)
+        check("--json null 表示删除该键", bool(removed) and removed.get("removed") is True,
+              r.stdout[:120])
+        st, cfgv, _ = c.call("/config")
+        cur = next((x for x in (cfgv.get("rules") or []) if x.get("id") == "smoke-rule"), {})
+        check("删掉的键从配置里消失", "has_tools" not in (cur.get("when") or {}),
+              json.dumps(cur.get("when"), ensure_ascii=False))
+
+        # 面板「添加规则」的实际写法：新建的先停用，填好条件再打开开关
+        r = run_cli("rule-add", "--id", "smoke-panel", "--disabled")
+        added = as_json(r.stdout)
+        check("rule-add --disabled 建出的规则是停用状态",
+              bool(added) and added.get("rule", {}).get("enabled") is False, r.stdout[:160])
+        st, d, _ = c.call("/route?model=smoke-special")
+        check("停用的新规则不影响路由", d.get("rule") != "smoke-panel", str(d.get("rule")))
+        # 面板编辑表单保存字段时的写法：多值写 JSON 数组、描述写普通字符串
+        run_cli("set", "rules.smoke-panel.when.model", '["panel-special","*-mini"]', "--json")
+        run_cli("set", "rules.smoke-panel.route.providers", '["mock-cheap"]', "--json")
+        run_cli("set", "rules.smoke-panel.description", "面板保存的规则")
+        run_cli("set", "rules.smoke-panel.route.tactic", "cheapest")
+        run_cli("set", "rules.smoke-panel.enabled", "true")
+        st, cfgv, _ = c.call("/config")
+        cur = next((x for x in (cfgv.get("rules") or []) if x.get("id") == "smoke-panel"), {})
+        check("面板保存的多值字段落成数组",
+              (cur.get("when") or {}).get("model") == ["panel-special", "*-mini"],
+              json.dumps(cur.get("when"), ensure_ascii=False))
+        check("面板保存的候选链与排序策略生效",
+              (cur.get("route") or {}).get("providers") == ["mock-cheap"]
+              and (cur.get("route") or {}).get("tactic") == "cheapest",
+              json.dumps(cur.get("route"), ensure_ascii=False))
+        check("面板保存的描述是普通字符串", cur.get("description") == "面板保存的规则",
+              repr(cur.get("description")))
+        st, d, _ = c.call("/route?model=panel-special")
+        check("打开开关后新规则按条件命中（更靠前的规则不匹配这个模型）",
+              d.get("rule") == "smoke-panel", str(d.get("rule")))
+        run_cli("rule-remove", "smoke-panel")
+
+        r = run_cli("rule-remove", "smoke-first")
+        check("rule-remove 返回被删的 id",
+              (as_json(r.stdout) or {}).get("removed") == "smoke-first", r.stdout[:120])
+        run_cli("rule-remove", "smoke-rule")
+        r = run_cli("rule-remove", "no-such-rule")
+        check("删除不存在的规则报错退出", r.returncode != 0, r.stdout[:120])
+        st, cfgv, _ = c.call("/config")
+        ids = [x.get("id") for x in (cfgv.get("rules") or [])]
+        check("两条冒烟规则都已清理", "smoke-rule" not in ids and "smoke-first" not in ids,
+              str(ids))
+
         print("\n⑩ 优雅停止")
         proc.terminate()
         proc.wait(timeout=10)

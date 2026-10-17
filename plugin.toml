@@ -16,7 +16,7 @@
 id = "ylxc/llm-hub"
 name = "LLM Hub"
 name_key = "plugin.name"
-version = "1.2.4"
+version = "1.2.5"
 plugin_api = 26
 author = "ylxc"
 license = "MIT"
