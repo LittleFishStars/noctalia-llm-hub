@@ -18,7 +18,7 @@
     },
     "host": {
       "label": "Listen address",
-      "description": "Loopback only by default so local apps can reach it; 0.0.0.0 exposes it to your LAN"
+      "description": "localhost listens on both 127.0.0.1 and ::1; comma-separate several addresses, 0.0.0.0 exposes it to your LAN"
     },
     "api_key": {
       "label": "Local access key",

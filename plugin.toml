@@ -16,7 +16,7 @@
 id = "ylxc/llm-hub"
 name = "LLM Hub"
 name_key = "plugin.name"
-version = "1.2.0"
+version = "1.2.1"
 plugin_api = 26
 author = "ylxc"
 license = "MIT"
@@ -57,7 +57,7 @@ key = "host"
 type = "string"
 label_key = "settings.host.label"
 description_key = "settings.host.description"
-default = "127.0.0.1"
+default = "localhost"
 
 [[setting]]
 key = "api_key"

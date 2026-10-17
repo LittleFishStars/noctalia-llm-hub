@@ -25,7 +25,7 @@ from llmhub_canon import CanonRequest, CanonResponse
 from llmhub_adapters import (ConfigError, HttpRequest, LineStream, UpstreamError, check_status,
                              get_adapter, http_request)
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 CONFIG_VERSION = 1
 
 
@@ -102,7 +102,7 @@ def match_any(patterns: Any, value: str) -> bool:
 DEFAULT_CONFIG: dict = {
     "config_version": CONFIG_VERSION,
     "server": {
-        "host": "127.0.0.1",
+        "host": "localhost",        # localhost = 127.0.0.1 + ::1；可写逗号分隔的多个地址
         "port": 8787,
         "api_key": "",
         "request_timeout_ms": 600000,

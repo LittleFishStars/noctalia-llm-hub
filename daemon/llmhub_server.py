@@ -101,11 +101,29 @@ class Gateway:
 
     # ── 主循环 ──────────────────────────────────────────────────────────────
     async def serve(self, host: str, port: int):
+        """监听 host；host 可为逗号分隔的多个地址，或 localhost/*（同时听 IPv4 与 IPv6）。
+
+        任一地址绑定成功即视为启动成功，其余地址失败只记警告——例如客户端把
+        localhost 解析成 ::1 时，只听 127.0.0.1 就会连接被拒。
+        """
+        from contextlib import AsyncExitStack
+
         self.host, self.port = host, port
-        server = await asyncio.start_server(self._on_client, host, port, limit=MAX_BODY,
-                                            reuse_address=True)
-        addrs = ", ".join(str(s.getsockname()) for s in server.sockets or [])
-        self.log(f"llm-hub 网关已启动 v{VERSION} → http://{host}:{port}  ({addrs})")
+        servers, bound, errors = [], [], []
+        for h in expand_hosts(host):
+            try:
+                srv = await asyncio.start_server(self._on_client, h, port, limit=MAX_BODY,
+                                                 reuse_address=True)
+            except OSError as e:
+                errors.append(f"{h}:{port} ({e})")
+                continue
+            servers.append(srv)
+            bound.extend(_fmt_sockaddr(s.getsockname()) for s in srv.sockets or [])
+        if not servers:
+            raise OSError("；".join(errors) or f"无法监听 {host}:{port}")
+        self.log(f"llm-hub 网关已启动 v{VERSION} → http://{bound[0]}  (监听 {', '.join(bound)})")
+        for e in errors:
+            self.log(f"[warn] 监听跳过 {e}")
         loop = asyncio.get_running_loop()
         stop = asyncio.Event()
 
@@ -117,7 +135,9 @@ class Gateway:
                 loop.add_signal_handler(s, _sig)
             except (NotImplementedError, RuntimeError):
                 pass
-        async with server:
+        async with AsyncExitStack() as stack:
+            for srv in servers:
+                await stack.enter_async_context(srv)
             await stop.wait()
         self.log("正在关闭…")
         self.stats.flush(force=True)
@@ -824,15 +844,51 @@ class Gateway:
         return True
 
 
+def expand_hosts(host: str) -> list[str]:
+    """把 host 配置展开成实际要监听的地址列表。
+
+    localhost → 127.0.0.1 与 ::1 都听（客户端把 localhost 解析成 ::1 时也能连）；
+    * / all / any → IPv4 与 IPv6 通配；其余按逗号或空格分隔，逐个使用。
+    """
+    spec = (host or "").strip() or "127.0.0.1"
+    low = spec.lower()
+    if low == "localhost":
+        hosts = ["127.0.0.1", "::1"]
+    elif low in ("*", "all", "any"):
+        hosts = ["0.0.0.0", "::"]
+    else:
+        hosts = [h.strip() for h in spec.replace(",", " ").split() if h.strip()]
+    out: list[str] = []
+    for h in hosts:
+        if h not in out:
+            out.append(h)
+    return out
+
+
+def _fmt_sockaddr(addr) -> str:
+    """把 getsockname() 的地址格式化成 host:port / [host]:port。"""
+    if isinstance(addr, tuple) and len(addr) >= 2:
+        h, p = addr[0], addr[1]
+        return f"[{h}]:{p}" if ":" in str(h) else f"{h}:{p}"
+    return str(addr)
+
+
 def pick_port(preferred: int) -> int:
-    """端口被占用时自动 +1 重试。"""
+    """端口被占用时自动 +1 重试（IPv4 与 IPv6 回环都检查）。"""
     for offset in range(0, 20):
         port = preferred + offset
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        free = True
+        for family, addr in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+            s = socket.socket(family, socket.SOCK_STREAM)
             try:
-                s.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    s.bind((addr, port))
+                except OSError:
+                    free = False
+                    break
+            finally:
+                s.close()
+        if free:
+            return port
     return preferred

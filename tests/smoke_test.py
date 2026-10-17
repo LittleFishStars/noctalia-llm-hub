@@ -138,6 +138,23 @@ def main() -> int:
     os.makedirs(state, exist_ok=True)
     with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump(CONFIG, f, ensure_ascii=False)
+
+    sys.path.insert(0, os.path.join(ROOT, "daemon"))
+    import llmhub_server as srv
+
+    print("\n⑪ 监听地址展开（IPv4/IPv6 双栈）")
+    check("localhost 同时展开出 127.0.0.1 与 ::1",
+          srv.expand_hosts("localhost") == ["127.0.0.1", "::1"], str(srv.expand_hosts("localhost")))
+    check("逗号/空格分隔的多地址都保留",
+          srv.expand_hosts("127.0.0.1, ::1") == ["127.0.0.1", "::1"],
+          str(srv.expand_hosts("127.0.0.1, ::1")))
+    check("通配 * 展开成 IPv4+IPv6 通配", srv.expand_hosts("*") == ["0.0.0.0", "::"],
+          str(srv.expand_hosts("*")))
+    check("空值回退到 127.0.0.1", srv.expand_hosts("") == ["127.0.0.1"], str(srv.expand_hosts("")))
+    check("地址格式化 IPv4/IPv6 都正确",
+          srv._fmt_sockaddr(("127.0.0.1", 8787)) == "127.0.0.1:8787"
+          and srv._fmt_sockaddr(("::1", 8787, 0, 0)) == "[::1]:8787",
+          srv._fmt_sockaddr(("::1", 8787, 0, 0)))
     proc = None
     try:
         print("启动守护进程…")

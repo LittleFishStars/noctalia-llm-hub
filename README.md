@@ -12,7 +12,7 @@
 - **协议双向翻译**：入站 `OpenAI /chat/completions`、`Anthropic /v1/messages`、`OpenAI /v1/responses` 三种协议任意进、任意出；OpenAI 请求打到 Anthropic 上游、Claude Code 打到 Gemini 上游都可以（含 SSE 流式、工具调用、多模态图片、用量统计）。
 - **面板里改 provider**：控制台 `Provider` 页签两级视图（列表 ⇄ 编辑），可直接改类型、地址、密钥、模型，也能开关、连通性测试、新增/删除服务商，改完即时热重载，不用手改 JSON。
 - **思考内容透传**：DeepSeek 的 `reasoning_content`、Claude 的 `thinking` 块、Gemini 的 `thought` 都会归一成 `reasoning` 并按客户端协议原样输出（非流式与流式都支持）。
-- **本地接口**：默认只监听 `127.0.0.1:8787`，OpenAI 兼容，任何 SDK 改一行 `base_url` 即可接入；另有 `/admin/ask` 这种「一句话拿文本」的最简接口。
+- **本地接口**：默认在 `localhost:8787` 上同时监听 `127.0.0.1` 与 `::1`（IPv4/IPv6 都能连），OpenAI 兼容，任何 SDK 改一行 `base_url` 即可接入；另有 `/admin/ask` 这种「一句话拿文本」的最简接口。
 - **CLI**：`llmhubd start/stop/status/ask/route/models/stats/logs/test/…`，不需要写代码就能用；`bin/llmhub` 是免安装入口。
 - **零依赖**：网关只用 Python 标准库（3.9+），不需要 pip 安装任何东西，也不需要 Node。
 - **用量与观测**：每个 provider 的请求数/错误数/延迟 EWMA/tokens/成本估算、按模型与按规则分组、请求日志（可清空/重置）、`X-LLMHub-*` 响应头标注本次实际命中的 provider/模型/规则/策略/耗时。
@@ -100,7 +100,7 @@ export DEEPSEEK_API_KEY=sk-xxxx
 
 ## 本地接口
 
-服务默认监听 `127.0.0.1:8787`（仅本机可访问）。设了 `server.api_key` 之后，除 `/health` 外所有接口都要求 `Authorization: Bearer <key>` 或 `x-api-key: <key>`。
+服务默认监听 `localhost:8787`，即**同时监听 `127.0.0.1:8787` 与 `[::1]:8787`**（仅本机可访问）——某些客户端（Node 18 的 fetch 等）会把 `localhost` 解析成 `::1`，只听 IPv4 时它们会直接报「连接被拒」。`server.host` 可写多个地址（逗号分隔）或 `0.0.0.0`/`*`。设了 `server.api_key` 之后，除 `/health` 外所有接口都要求 `Authorization: Bearer <key>` 或 `x-api-key: <key>`。
 
 ### 端点
 
@@ -199,7 +199,7 @@ curl -s http://127.0.0.1:8787/admin/ask -H 'Content-Type: application/json' \
 {
   "config_version": 1,
   "server": {
-    "host": "127.0.0.1",          // 想给同机其它进程用就保持 127.0.0.1
+    "host": "localhost",        // localhost = 同时听 127.0.0.1 与 ::1；可写多个地址（逗号分隔）
     "port": 8787,                 // 被占用时 llmhubd 会自动挑下一个可用端口
     "api_key": "",                // 非空则要求 Bearer / x-api-key
     "request_timeout_ms": 600000, // 单次请求总预算（含重试与降级）
