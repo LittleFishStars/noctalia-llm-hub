@@ -142,7 +142,7 @@ def main() -> int:
     sys.path.insert(0, os.path.join(ROOT, "daemon"))
     import llmhub_server as srv
 
-    print("\n⑪ 监听地址展开（IPv4/IPv6 双栈）")
+    print("\n⑪ 监听地址展开与连通性探测（纯函数）")
     check("localhost 同时展开出 127.0.0.1 与 ::1",
           srv.expand_hosts("localhost") == ["127.0.0.1", "::1"], str(srv.expand_hosts("localhost")))
     check("逗号/空格分隔的多地址都保留",
@@ -155,6 +155,20 @@ def main() -> int:
           srv._fmt_sockaddr(("127.0.0.1", 8787)) == "127.0.0.1:8787"
           and srv._fmt_sockaddr(("::1", 8787, 0, 0)) == "[::1]:8787",
           srv._fmt_sockaddr(("::1", 8787, 0, 0)))
+
+    _cfg = {"providers": [
+        {"id": "a", "enabled": True, "models": ["*", "real-a"]},
+        {"id": "b", "enabled": True, "models": ["real-b"]},
+        {"id": "off", "enabled": False, "models": ["nope-model"]},
+    ]}
+    check("探测优先用指定 provider 的第一个具体模型（跳过 *）",
+          srv.probe_model(_cfg, "a", "") == "real-a", srv.probe_model(_cfg, "a", ""))
+    check("显式传模型时原样使用", srv.probe_model(_cfg, "a", "x-1") == "x-1")
+    check("指定 provider 没有具体模型时退到其它已启用 provider",
+          srv.probe_model(_cfg, "off", "") == "real-a", srv.probe_model(_cfg, "off", ""))
+    check("只有通配模型时才回退 ping（旧行为，会让真实上游报 400）",
+          srv.probe_model({"providers": [{"id": "m", "enabled": True, "models": ["*"]}]},
+                          "m", "") == "ping")
     proc = None
     try:
         print("启动守护进程…")
@@ -291,8 +305,9 @@ def main() -> int:
         check("block_patterns 命中返回 400", st == 400 and "block" in json.dumps(gr).lower()
               or st == 400, f"status={st}")
         st, t, _ = c.call("/admin/test", {"provider": "mock-primary", "prompt": "连通性"})
-        check("/admin/test 返回 provider 与文本", t.get("ok") is True and t.get("provider") == "mock-primary",
-              json.dumps(t)[:200])
+        check("/admin/test 不带 model 时自动选 provider 的第一个具体模型",
+              t.get("ok") is True and t.get("provider") == "mock-primary"
+              and t.get("model") == "mock-echo", json.dumps(t)[:200])
         st, a, _ = c.call("/admin/ask", {"prompt": "最简接口", "provider": "mock-cheap"})
         check("/admin/ask 指定 provider 生效", a.get("provider") == "mock-cheap", str(a.get("provider")))
         st, a2, _ = c.call("/admin/ask", {"messages": [

@@ -912,7 +912,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("id")
     s.add_argument("-p", "--prompt", default="ping：请用一句话回答 pong")
     s.add_argument("-m", "--model")
-    s.add_argument("--max-tokens", type=int, default=64)
+    s.add_argument("--max-tokens", type=int, default=256)   # 推理模型会先花在思维链上
     s.add_argument("--json", action="store_true")
 
     s = add("init", cmd_init, "写配置模板")

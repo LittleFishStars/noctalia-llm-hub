@@ -392,7 +392,7 @@ provider 字段：
 | `models` / `providers` | 列出模型（含别名）/ provider 与规则 |
 | `stats` / `logs` / `clear-logs` / `reset-stats` | 统计、请求日志与清理（`--json`、`-n`、`--follow`、`--remote`） |
 | `enable <id>` / `disable <id>` | 开关 provider（运行中即时生效并写回配置） |
-| `test <id>` | 连通性测试（`-p` 自定义 prompt、`--json`） |
+| `test <id>` | 连通性测试（`-p` 自定义 prompt、`-m` 指定模型；不带 `-m` 时自动选该 provider 的第一个具体模型、`--json`） |
 | `init` / `config` / `port` / `doctor` | 写配置模板 / 打印配置（密钥打码）/ 打印端口 / 环境自检 |
 | `set <点分键> <值>` | 改配置，支持数组下标与 **id 定位**：`set providers.1.enabled true`、`set providers.deepseek.api_key sk-xxx`、`set providers.acme.models '["a","b"]' --json` |
 | `provider-add` | 新增服务商：`provider-add --type anthropic --id acme --label 公司网关 --base-url https://… --key ${ACME_KEY} --model a --model b --priority 5`；默认 `type=openai`、`models=[]`（空 = 暂不参与路由） |
@@ -445,8 +445,8 @@ ylxc-llm-hub/
 │   ├── llmhub_adapters.py   # 上游适配器（openai/anthropic/gemini/ollama/mock）
 │   └── llmhub_canon.py      # 协议规范化与三种协议的序列化
 └── tests/
-    ├── smoke_test.py        # 网关端到端冒烟（47 项，无需联网）
-    └── translate_test.py    # 协议翻译矩阵（36 项，自带假上游）
+    ├── smoke_test.py        # 网关端到端冒烟（56 项，无需联网）
+    └── translate_test.py    # 协议翻译矩阵（41 项，自带假上游）
 ```
 
 ---
@@ -456,7 +456,7 @@ ylxc-llm-hub/
 两套测试都**不需要联网、不需要任何 API key**（用 `type=mock` 的 provider 与本地假上游）：
 
 ```bash
-python3 tests/smoke_test.py       # 通过 47 项，失败 0 项
+python3 tests/smoke_test.py       # 通过 56 项，失败 0 项
 python3 tests/translate_test.py   # 通过 41 项，失败 0 项
 ```
 

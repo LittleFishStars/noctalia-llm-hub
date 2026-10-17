@@ -80,6 +80,28 @@ def mask_server(srv: Any) -> Any:
     return out
 
 
+def probe_model(cfg: dict, provider: str, model: str) -> str:
+    """探测/连通性测试要用的模型名。
+
+    以前没传 model 时直接编一个 "ping" 发给上游，真实服务商一律回 400（例如 DeepSeek
+    报 “you passed ping”），面板的连通性测试就永远显示失败。这里改成：优先用指定模型，
+    其次用指定 provider 已配置的第一个具体模型（跳过 "*" 这种通配），再退到任意已启用
+    provider 的具体模型；全都没有时才回退 "ping"（只对 mock 这类不校验模型名的后端有效）。
+    """
+    if model:
+        return model
+    provs = [p for p in (cfg.get("providers") or []) if isinstance(p, dict)]
+    pinned = [p for p in provs if str(p.get("id")) == provider] if provider else []
+    for group in (pinned, provs):
+        for p in group:
+            if not p.get("enabled"):
+                continue
+            for m in p.get("models") or []:
+                if isinstance(m, str) and m and "*" not in m:
+                    return m
+    return "ping"
+
+
 class Gateway:
     def __init__(self, store: ConfigStore, stats: Stats, executor: Executor, router: Router,
                  quiet: bool = False):
@@ -719,9 +741,9 @@ class Gateway:
         provider = str(body.get("provider") or "")
         model = str(body.get("model") or "")
         prompt = str(body.get("prompt") or "ping")
-        req = CanonRequest(protocol="openai", model=model or "ping",
+        req = CanonRequest(protocol="openai", model=probe_model(cfg, provider, model),
                            messages=[Msg(role="user", parts=[Part(type="text", text=prompt)])],
-                           max_tokens=int(body.get("max_tokens") or 32),
+                           max_tokens=int(body.get("max_tokens") or 256),   # 推理模型会先花在思维链上
                            hint_provider=provider)
         dec = self.router.resolve(req, cfg)
         if provider:
