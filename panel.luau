@@ -466,7 +466,7 @@ local function providerCard(p)
 
     local confirming = view.confirmRemove == p.id
     return ui.column({ key = "card:" .. p.id, fill = "surface_variant", radius = 8,
-                       padding = 10, gap = 6 }, {
+                       padding = 8, gap = 4 }, {
         ui.row({ gap = 8, align = "center" }, {
             ui.glyph({ name = p.enabled and "plug-connected" or "plug", size = 14, color = color }),
             ui.column({ gap = 1, flexGrow = 1 }, {
@@ -1113,23 +1113,25 @@ local function tabLogs()
     for _, e in ipairs(logs) do
         local ok = (tonumber(e.status) or 500) < 400
         local ts = e.ts and noctalia.formatTime("%H:%M:%S", e.ts) or "-"
-        table.insert(children, ui.row({ gap = 8, align = "center" }, {
-            ui.glyph({ name = ok and "circle-check" or "alert-triangle", size = 12,
+        -- 行高压紧到 18px：label 实际行高含宿主 1.5× line-height + 上下 padding ≈ 40px
+        -- 不强 height=18 的话 25 行 1000px 触发 scroll，截图里只能渲染 ~17 行。
+        table.insert(children, ui.row({ gap = 6, align = "center", height = 18 }, {
+            ui.glyph({ name = ok and "circle-check" or "alert-triangle", size = 11,
                        color = ok and "primary" or "error" }),
-            ui.label({ text = ts, fontSize = 10, color = "on_surface_variant", width = 62 }),
-            ui.label({ text = tostring(e.model or "-"), fontSize = 10, width = 150, maxLines = 1,
+            ui.label({ text = ts, fontSize = 10, color = "on_surface_variant", width = 60, height = 18 }),
+            ui.label({ text = tostring(e.model or "-"), fontSize = 10, width = 130, maxLines = 1, height = 18,
                        color = "on_surface" }),
-            ui.label({ text = "→ " .. tostring(e.provider or "-"), fontSize = 10, width = 110,
+            ui.label({ text = "→ " .. tostring(e.provider or "-"), fontSize = 10, width = 100, height = 18,
                        maxLines = 1, color = "on_surface_variant" }),
-            ui.label({ text = hub.fmtMs(e.ms), fontSize = 10, width = 60, color = "on_surface_variant" }),
+            ui.label({ text = hub.fmtMs(e.ms), fontSize = 10, width = 55, height = 18, color = "on_surface_variant" }),
             ui.label({ text = string.format("%s+%s", hub.fmtNum(e.tokens_in), hub.fmtNum(e.tokens_out)),
-                       fontSize = 10, flexGrow = 1, color = "on_surface_variant", maxLines = 1 }),
+                       fontSize = 10, flexGrow = 1, maxLines = 1, height = 18, color = "on_surface_variant" }),
         }))
     end
     if view.logsBusy then
         table.insert(children, ui.label({ text = L("panel.logs.loading"), fontSize = 10, color = "primary" }))
     end
-    return ui.column({ gap = 6, padding = 12 }, children)
+    return ui.column({ gap = 4, padding = 10 }, children)
 end
 
 -- ── 组装 ────────────────────────────────────────────────────────────────────
@@ -1210,10 +1212,13 @@ end
 
 function render()
     local body
+    local noScroll = false  -- 编辑态直接平铺，不进 scroll（避免空白处还出现滚动条）
     if view.tab == "providers" then
         body = tabProviders()
+        noScroll = view.editing ~= nil
     elseif view.tab == "rules" then
         body = tabRules()
+        noScroll = view.ruleEditing ~= nil
     elseif view.tab == "ask" then
         body = tabAsk()
     elseif view.tab == "logs" then
@@ -1224,15 +1229,21 @@ function render()
     local foot = view.note and ui.label({ text = view.note, fontSize = 10, color = "on_surface_variant",
                                           maxLines = 2 })
         or ui.label({ text = "", fontSize = 1, visible = false })
-    panel.render(ui.column({ gap = 8, padding = 12 }, {
+    local bodyContainer
+    if noScroll then
+        -- 编辑视图：直接放进主 column，body 自己决定布局（卡片不滚动，超出才被裁）
+        bodyContainer = ui.column({ flexGrow = 1, gap = 8 }, { body })
+    else
+        bodyContainer = ui.scroll({ flexGrow = 1, gap = 8, revealKey = view.tab }, { body })
+    end
+    panel.render(ui.column({ gap = 6, padding = 10 }, {
         header(),
         tabBar(),
         ui.separator({}),
-        ui.scroll({ flexGrow = 1, gap = 8, revealKey = view.tab }, { body }),
+        bodyContainer,
         foot,
     }))
 end
-
 -- ── 宿主回调 ────────────────────────────────────────────────────────────────
 --- 按 id 跑一次连通性测试（id 为空 = 第一个 provider）。
 --- 供 onOpen / onIpc 使用：面板还没拿到快照时先补一次快照再跑。
