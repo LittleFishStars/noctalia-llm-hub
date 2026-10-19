@@ -23,6 +23,7 @@ local view = {
     route = nil,
     watched = false,
     dirty = false,
+    maxH = 0,             -- 焦点屏幕可用高（屏高 − 顶 bar 30 − 边距 50），顶层 column 用这个撑满
     draft = {},          -- 未保存的输入框内容：{ "url:<id>" = "…", "key:<id>" = …, "models:<id>" = … }
     confirmRemove = nil, -- 两段式删除：先点一次记 id，再点第二次才真删
     ruleEditing = nil,    -- 正在编辑的规则 id；nil = 规则列表视图
@@ -1236,7 +1237,7 @@ function render()
     else
         bodyContainer = ui.scroll({ flexGrow = 1, gap = 8, revealKey = view.tab }, { body })
     end
-    panel.render(ui.column({ gap = 6, padding = 10 }, {
+    panel.render(ui.column({ gap = 6, padding = 10, height = view.maxH, flexGrow = 1 }, {
         header(),
         tabBar(),
         ui.separator({}),
@@ -1305,6 +1306,20 @@ end
 
 -- ── 宿主回调 ────────────────────────────────────────────────────────────────
 function onOpen(context)
+    -- 计算焦点屏幕可用高：屏高 − 顶 bar 30 − 面板上下边距 50 − 留白 20
+    -- 不主动算这个，宿主会按「首次内容自然高」缓存；切到短 tab 时底下就留一大块空。
+    local function pickMaxH()
+        local name = noctalia.focusedOutputName()
+        local outs = noctalia.outputs() or {}
+        local chosen
+        for _, o in ipairs(outs) do
+            if o.name == name then chosen = o; break end
+        end
+        if not chosen and #outs > 0 then chosen = outs[1] end
+        if not chosen then return 1500 end
+        return math.max(600, (chosen.height or 1080) - 100)
+    end
+    view.maxH = pickMaxH()
     noctalia.setUpdateInterval(math.max(1000, hub.setting("poll_interval_ms")))
     if not view.watched then
         view.watched = true
@@ -1322,6 +1337,18 @@ end
 
 function onClose()
     view.logsBusy = false
+end
+function onOutputsChanged()
+    -- 输出/几何变了（接外屏、调分辨率）→ 重算可用高 + 重渲染，避免切回 panel 时尺寸不对
+    local name = noctalia.focusedOutputName()
+    local outs = noctalia.outputs() or {}
+    local chosen
+    for _, o in ipairs(outs) do
+        if o.name == name then chosen = o; break end
+    end
+    if not chosen and #outs > 0 then chosen = outs[1] end
+    if chosen then view.maxH = math.max(600, (chosen.height or 1080) - 100) end
+    render()
 end
 function update()
     if view.tab == "logs" then fetchLogs() end

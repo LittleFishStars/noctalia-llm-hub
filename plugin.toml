@@ -118,7 +118,9 @@ entry = "bar.luau"
 id = "console"
 entry = "panel.luau"
 width = 660
-height = 800
+# 高度自适应屏幕（onOpen 里取 noctalia.outputs() 算 maxH），manifest 给大点避免 1080p
+# 笔记本首启就触发滚动；这里给 1880 (4K 屏 2080 减 200 边距) 兼顾 1080p (1080 减 200 = 880) 也有富余。
+height = 1500
 placement = "floating"
 position = "center"
 
