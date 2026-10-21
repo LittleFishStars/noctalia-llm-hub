@@ -25,7 +25,7 @@ from llmhub_canon import CanonRequest, CanonResponse
 from llmhub_adapters import (ConfigError, HttpRequest, LineStream, UpstreamError, check_status,
                              get_adapter, http_request)
 
-VERSION = "1.2.6"
+VERSION = "1.2.7"
 CONFIG_VERSION = 1
 
 

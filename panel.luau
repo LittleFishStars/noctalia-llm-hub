@@ -1259,7 +1259,9 @@ function render()
     else
         bodyContainer = ui.scroll({ flexGrow = 1, gap = 8, revealKey = view.tab }, { body })
     end
-    panel.render(ui.column({ gap = 6, padding = 10, height = view.maxH, flexGrow = 1 }, {
+    -- 不再强制 height = maxH：那会把面板永远撑到满屏（2 行 provider 也 1300px 高）。
+    -- 让宿主持有尺寸、内容决定高度；内容超出屏幕时由 bodyContainer 的 flexGrow 滚动兜住。
+    panel.render(ui.column({ gap = 6, padding = 10 }, {
         header(),
         tabBar(),
         ui.separator({}),

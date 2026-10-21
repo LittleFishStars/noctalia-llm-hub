@@ -16,7 +16,7 @@
 id = "ylxc/llm-hub"
 name = "LLM Hub"
 name_key = "plugin.name"
-version = "1.2.6"
+version = "1.2.7"
 plugin_api = 26
 author = "ylxc"
 license = "MIT"
@@ -118,9 +118,10 @@ entry = "bar.luau"
 id = "console"
 entry = "panel.luau"
 width = 660
-# 高度自适应屏幕（onOpen 里取 noctalia.outputs() 算 maxH），manifest 给大点避免 1080p
-# 笔记本首启就触发滚动；这里给 1880 (4K 屏 2080 减 200 边距) 兼顾 1080p (1080 减 200 = 880) 也有富余。
-height = 1500
+# 面板尺寸是宿主持有的（无运行时改尺寸 API），而且宿主的实际做法是「按当前内容高度定窗口高度」
+# （实测：Provider 列表页 622 逻辑高、日志页 947 逻辑高，同一份 660 宽）。所以这里只给一个
+# 合理的初值，真正的自适应交给内容：短页签就矮、长页签就高，超出屏幕才滚动。
+height = 720
 placement = "floating"
 position = "center"
 
