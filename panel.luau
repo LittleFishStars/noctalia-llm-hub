@@ -47,6 +47,28 @@ local function refresh()
     end
 end
 
+--- 启停/重启：面板直接调 CLI，不依赖 service 的共享状态监听。
+--- 宿主机在「开机自动加载插件」时不会调 onEnable，watch 可能压根没注册
+--- （症状就是点了没反应）；面板自己动手最稳，service 下一轮轮询就会看到新状态。
+local function requestRun(action)
+    local label = L("panel.start")
+    if action == "stop" then label = L("panel.stop")
+    elseif action == "restart" then label = L("panel.restart") end
+    view.note = L("panel.busy", { label = label })
+    render()
+    local function done(ok, out)
+        if ok then
+            view.note = L("panel.done", { label = label })
+        else
+            view.note = L("panel.failed", { label = label, detail = (out or ""):sub(-160) })
+        end
+        refresh()
+    end
+    if action == "stop" then hub.stop(done)
+    elseif action == "restart" then hub.restart(done)
+    else hub.start(done) end
+end
+
 local function fetchLogs()
     if view.logsBusy then return end
     view.logsBusy = true
@@ -1175,9 +1197,9 @@ local function header()
             ui.button({ text = running and L("panel.stop") or L("panel.start"),
                         glyph = running and "player-stop" or "player-play",
                         variant = running and "outline" or "primary", controlSize = "sm",
-                        onClick = function() hub.request(running and "stop" or "start"); refresh() end }),
+                        onClick = function() requestRun(running and "stop" or "start") end }),
             ui.button({ text = L("panel.restart"), glyph = "refresh", variant = "outline", controlSize = "sm",
-                        onClick = function() hub.request("restart"); refresh() end }),
+                        onClick = function() requestRun("restart") end }),
             ui.button({ text = L("panel.reload_config"), glyph = "reload", variant = "ghost", controlSize = "sm",
                         onClick = function()
                             run(L("panel.reload_config"), { "reload" }, 30000)

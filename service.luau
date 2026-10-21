@@ -13,6 +13,25 @@ local busy = false
 local busySince = 0
 local askSeq = 0
 local lastSig = nil
+-- 关键：宿主「开机自动加载插件」时不会调用 onEnable（官方文档里 onEnable 只在插件被
+-- 显式启用时触发），所以 state.watch 与 autostart 都不能只写在 onEnable 里 —— 否则每次
+-- 重启电脑后都会表现为：面板的「启动/重启」按钮点了没反应、网关也不自动拉起。
+local inited = false
+local selfHealTried = false
+local handle          -- 前向声明：poll 与 ensureInit 都要引用
+local startGateway
+
+--- 注册共享状态监听 + 更新间隔（幂等）。由 onEnable 与 update 双路调用兜底。
+local function ensureInit()
+    if inited then return end
+    inited = true
+    noctalia.setUpdateInterval(math.max(1000, hub.setting("poll_interval_ms")))
+    noctalia.state.watch(hub.CMD_KEY, function(cmd)
+        if type(cmd) == "table" and type(cmd.action) == "string" then
+            handle(cmd.action)
+        end
+    end)
+end
 
 local function poll()
     local now = noctalia.nowMs()
@@ -39,10 +58,17 @@ local function poll()
         end
         hub.publish(snap)
         busy = false
+        -- 兜底自动拉起（每个会话只试一次，避免和用户手动「停止」打架）：
+        -- 开机自动加载时 onEnable 不跑，autostart 只能靠这里补。
+        if not snap.running and not selfHealTried and hub.setting("autostart") then
+            selfHealTried = true
+            noctalia.log("llm-hub: 网关未运行，按 autostart 自动拉起一次")
+            startGateway(true)
+        end
     end)
 end
 
-local function startGateway(quiet)
+function startGateway(quiet)   -- 见文件顶部的前向声明
     hub.start(function(ok, out)
         if ok then
             if not quiet then noctalia.notify("LLM Hub", "网关已启动：" .. hub.endpoint()) end
@@ -59,7 +85,7 @@ local function stopGateway()
     end)
 end
 
-local function handle(action)
+function handle(action)        -- 见文件顶部的前向声明
     if action == "start" then
         startGateway(true)
     elseif action == "stop" then
@@ -76,12 +102,7 @@ end
 -- ── 宿主回调 ────────────────────────────────────────────────────────────────
 
 function onEnable()
-    noctalia.setUpdateInterval(math.max(1000, hub.setting("poll_interval_ms")))
-    noctalia.state.watch(hub.CMD_KEY, function(cmd)
-        if type(cmd) == "table" and type(cmd.action) == "string" then
-            handle(cmd.action)
-        end
-    end)
+    ensureInit()
     if hub.setting("autostart") and not hub.pidAlive() then
         startGateway(true)
     else
@@ -90,11 +111,12 @@ function onEnable()
 end
 
 function update()
+    ensureInit()   -- 开机自动加载时不会有 onEnable，这里兜底注册监听
     poll()
 end
 
 function onConfigChanged()
-    noctalia.setUpdateInterval(math.max(1000, hub.setting("poll_interval_ms")))
+    ensureInit()
     poll()
 end
 

@@ -36,6 +36,52 @@ BIN_NAME = "llmhubd"
 
 
 # ── 数据目录 / 文件 ─────────────────────────────────────────────────────────
+def write_int(path: str, value: int) -> None:
+    """写回 pid/端口这类运行时文件（文件丢了但网关还活着时用来补齐）。"""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(int(value)))
+    except OSError:
+        pass
+
+
+def expected_port(args) -> int:
+    """先看端口文件，再退回配置里的 server.port，最后用内置默认值。"""
+    port = read_int(port_file(args))
+    if port:
+        return port
+    try:
+        c = ConfigStore(args.config or default_config_path()).snapshot()
+        return int((c.get("server") or {}).get("port") or DEFAULT_CONFIG["server"]["port"])
+    except Exception:
+        return int(DEFAULT_CONFIG["server"]["port"])
+
+
+def probe_health(args, timeout: float = 3.0):
+    """不依赖 pid/端口文件探测网关：/health 通就返回它的 JSON（/health 不需要鉴权）。
+
+    这是「网关其实活着、但运行时文件丢了」时的救命通道 —— 否则 CLI 会一口咬定
+    「网关未运行」，面板上的停止/重启按钮也就点了没反应。
+    """
+    url = f"http://127.0.0.1:{expected_port(args)}/health"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.loads(r.read().decode() or "{}")
+    except Exception:
+        return None
+
+
+def sync_runtime_files(args, health: dict) -> None:
+    """按 /health 的内容补齐 pid/端口文件（网关自己报的 pid 最可信）。"""
+    pid = int(health.get("pid") or 0)
+    port = int(health.get("port") or 0)
+    if pid and not pid_alive(read_int(pid_file(args))):
+        write_int(pid_file(args), pid)
+    if port:
+        write_int(port_file(args), port)
+
+
 def data_dir(args) -> str:
     d = getattr(args, "data_dir", None) or os.environ.get("LLMHUB_DATA_DIR") or default_data_dir()
     os.makedirs(d, exist_ok=True)
@@ -79,6 +125,12 @@ class Local:
     def __init__(self, args):
         self.args = args
         self.port = read_int(port_file(args))
+        if not self.port:
+            # 运行时文件丢了但网关可能在跑：探一次 /health 并补回端口文件
+            h = probe_health(args)
+            if h:
+                sync_runtime_files(args, h)
+                self.port = int(h.get("port") or 0) or expected_port(args)
         if not self.port:
             raise SystemExit("网关未运行（读不到端口文件）。先执行：llmhubd start")
 
@@ -213,6 +265,14 @@ def cmd_start(args) -> int:
     if pid_alive(pid):
         print(f"网关已在运行（pid {pid}，端口 {read_int(port_file(args))}）")
         return 0
+    # pid 文件丢了但网关其实活着（运行时文件被清过 / 换过数据目录）：
+    # 补文件后直接返回，绝不能再拉一个 —— 那样端口被占会自动落到 8788。
+    h = probe_health(args)
+    if h:
+        sync_runtime_files(args, h)
+        print(f"网关已在运行：http://127.0.0.1:{h.get('port')}  "
+              f"(pid {h.get('pid')}，运行时文件已补齐)")
+        return 0
     lf = log_file(args)
     # -u：让 stdout 无缓冲，否则请求日志要等缓冲区满才落到 llmhubd.log
     cmd = [sys.executable, "-u", os.path.join(HERE, "llmhubd.py"), "serve"]
@@ -254,13 +314,20 @@ def cmd_start(args) -> int:
 def cmd_stop(args) -> int:
     pid = read_int(pid_file(args))
     if not pid_alive(pid):
-        print("网关未在运行")
-        for p in (pid_file(args), port_file(args)):
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-        return 0
+        # pid 文件可能是丢的：用 /health 兜底问出真进程
+        h = probe_health(args)
+        if h and h.get("pid"):
+            pid = int(h["pid"])
+            sync_runtime_files(args, h)
+            print(f"pid 文件已失效，按 /health 报告的 pid {pid} 停止")
+        else:
+            print("网关未在运行")
+            for p in (pid_file(args), port_file(args)):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            return 0
     os.kill(pid, signal.SIGTERM)
     for _ in range(50):
         time.sleep(0.1)
@@ -282,6 +349,13 @@ def cmd_status(args) -> int:
     pid = read_int(pid_file(args))
     port = read_int(port_file(args))
     alive = pid_alive(pid)
+    if not alive:
+        h = probe_health(args)
+        if h:
+            sync_runtime_files(args, h)
+            pid = int(h.get("pid") or 0)
+            port = int(h.get("port") or 0)
+            alive = True
     print(f"进程：{'运行中 pid ' + str(pid) if alive else '未运行'}")
     print(f"端口：{port or '-'}")
     print(f"配置：{args.config or default_config_path()}")

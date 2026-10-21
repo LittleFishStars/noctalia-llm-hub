@@ -508,6 +508,42 @@ def main() -> int:
               not os.path.exists(os.path.join(state, "llmhubd.port")))
         out = proc.stdout.read() if proc.stdout else ""
         check("日志中有请求记录行", "mock-primary" in out, out[-300:])
+        print("\n⑭ 运行时文件丢失与冷启动（「重启电脑后点启动/重启没反应」的根因）")
+        pid_path = os.path.join(state, "llmhubd.pid")
+        port_path = os.path.join(state, "llmhubd.port")
+        r = run_cli("status")
+        check("网关停掉后 status 报「未运行」且 rc≠0",
+              r.returncode != 0 and "未运行" in r.stdout, r.stdout.splitlines()[:1])
+        r = run_cli("start")
+        check("冷启动能把网关拉起来", r.returncode == 0 and "已启动" in r.stdout, r.stdout[-200:])
+        _st, h, _ = c.call("/health")
+        pid0 = int(h.get("pid") or 0)
+        for f in (pid_path, port_path):
+            if os.path.exists(f):
+                os.remove(f)
+        r = run_cli("status")
+        check("pid/端口文件被删后 status 仍靠 /health 认出「运行中」",
+              r.returncode == 0 and "运行中" in r.stdout, r.stdout.splitlines()[:2])
+        back = int(open(pid_path).read().strip()) if os.path.exists(pid_path) else 0
+        check("status 顺手把 pid 文件补回来", back == pid0, f"期望 {pid0}，实际 {back}")
+        r = run_cli("start")
+        check("start 认出已在运行、不会另起第二个进程",
+              "已在运行" in r.stdout and "已启动" not in r.stdout, r.stdout[-200:])
+        _st, h2, _ = c.call("/health")
+        check("网关 pid 没有被第二个实例顶掉", int(h2.get("pid") or 0) == pid0, str(h2.get("pid")))
+        for f in (pid_path, port_path):
+            if os.path.exists(f):
+                os.remove(f)
+        r = run_cli("stop")
+        check("stop 在文件丢失时靠 /health 找回真 pid 并停掉",
+              r.returncode == 0 and "已停止" in r.stdout, r.stdout[-200:])
+        gone = False
+        try:
+            c.call("/health", timeout=2)
+        except (Exception, SystemExit):
+            gone = True
+        check("停止后 /health 不再响应", gone)
+
     finally:
         if proc and proc.poll() is None:
             proc.kill()

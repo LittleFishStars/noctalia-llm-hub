@@ -539,6 +539,14 @@ noctalia plugins lint .                            # 清单与设置项校验（
 
 **想换配置文件位置？** 启动前设 `LLMHUB_CONFIG`，或在插件设置里填 `config_path`，或加 `--config`。
 
+**重启电脑后面板的「启动/重启」没反应？** 1.2.6 起从三个方向修掉了：
+
+1. **按钮不再依赖 service 的共享状态监听** —— 面板的启动/停止/重启直接调 CLI（`runAsync`），所以就算 service 那次没把监听注册上也照样能用；
+2. **service 兜底自愈** —— 宿主机在「开机自动加载插件」时**不会**调用 `onEnable`（官方文档里 `onEnable` 只在插件被显式启用时触发），所以 `state.watch` 与 `autostart` 改成 `onEnable`／`update` 双路注册；轮询时若发现「网关没运行 + 开着 autostart」会自动拉起一次（每次会话只试一次，不会和手动「停止」打架）；
+3. **运行时文件丢了也能管** —— 如果 `llmhubd.pid` / `llmhubd.port` 被清掉而网关其实还活着，`status`/`stop`/`start` 会用 `/health` 兜底问出真进程并补回文件；这种情况下 `start` 会报「已在运行」而**绝不会**再拉第二个进程（否则端口被占会自动落到 8788）。
+
+排查手段：`llmhubd --data-dir <插件数据目录> status` 看真实状态；插件日志里会出现 `llm-hub: 网关未运行，按 autostart 自动拉起一次` 之类的行（`~/.cache/noctalia/noctalia.log`）。
+
 ## License
 
 MIT
