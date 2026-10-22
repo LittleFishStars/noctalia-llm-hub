@@ -1236,6 +1236,7 @@ end
 -- 面板高度：宿主没有「内容自适应」也没有改窗口尺寸的 API，但窗口高度 = 根 column 的 height
 -- （以 plugin.toml 的 [[panel]] height 为上限）。所以按「装饰 + 当前页签内容」算一个贴合的高度：
 -- 短页签就矮、长页签就高，只有内容真的超出屏幕才出现滚动。
+local PANEL_H   = 700    -- 必须与 plugin.toml 的 [[panel]] height 保持一致
 local H_CHROME  = 168    -- 标题行 + 端点行 + 操作行 + 页签行 + 分隔线 + padding
 local H_SECTION = 64     -- 分区标题 + 一行说明
 local H_PROW    = 82     -- provider 列表一行（含行间距）
@@ -1297,9 +1298,12 @@ function render()
     else
         bodyContainer = ui.scroll({ flexGrow = 1, gap = 8, revealKey = view.tab }, { body })
     end
-    -- 不再强制 height = maxH：那会把面板永远撑到满屏（2 行 provider 也 1300px 高）。
-    -- 让宿主持有尺寸、内容决定高度；内容超出屏幕时由 bodyContainer 的 flexGrow 滚动兜住。
-    panel.render(ui.column({ gap = 6, padding = 10 }, {
+    -- 面板窗口高度由宿主定（plugin.toml 的 [[panel]] height = PANEL_H），这里必须给出**同值**的
+    -- 根高度：否则 column 在竖直方向没有界，body 的 flexGrow 算不出可用空间，滚动区会比窗口
+    -- 矮一截——表现就是「内容还没占满就出现滚动条、底部留一块死空白」。
+    local rootH = PANEL_H
+    if view.maxH and view.maxH > 0 and view.maxH < rootH then rootH = view.maxH end
+    panel.render(ui.column({ gap = 6, padding = 10, height = rootH }, {
         header(),
         tabBar(),
         ui.separator({}),
