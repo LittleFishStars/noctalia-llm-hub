@@ -118,10 +118,9 @@ entry = "bar.luau"
 id = "console"
 entry = "panel.luau"
 width = 660
-# 面板尺寸由宿主决定，但「窗口高度 = 根 column 的 height」且以这里为上限（实测：写 400 就只有 400）。
-# 所以这里给一个足够大的上限，实际高度由 panel.luau 的 wantHeight() 按当前页签内容算，
-# 让短页签矮、长页签高，只有内容真的超出屏幕才滚动。
-height = 1400
+# 面板尺寸由宿主持有，运行时无法改窗口大小；改这里后要让插件重新加载（禁用再启用 / 重启壳）才生效。
+# 700 是个折中：短页签留白不多，日志页按 10 条一屏正好放得下，超出才滚动。
+height = 700
 placement = "floating"
 position = "center"
 
