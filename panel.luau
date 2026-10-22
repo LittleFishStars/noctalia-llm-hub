@@ -1233,6 +1233,44 @@ local function tabBar()
     return ui.row({ gap = 4, align = "center" }, children)
 end
 
+-- 面板高度：宿主没有「内容自适应」也没有改窗口尺寸的 API，但窗口高度 = 根 column 的 height
+-- （以 plugin.toml 的 [[panel]] height 为上限）。所以按「装饰 + 当前页签内容」算一个贴合的高度：
+-- 短页签就矮、长页签就高，只有内容真的超出屏幕才出现滚动。
+local H_CHROME  = 168    -- 标题行 + 端点行 + 操作行 + 页签行 + 分隔线 + padding
+local H_SECTION = 64     -- 分区标题 + 一行说明
+local H_PROW    = 82     -- provider 列表一行（含行间距）
+local H_RROW    = 96     -- 规则列表一行（含行间距）
+local H_LROW    = 24     -- 日志一行（18 高 + 6 间距）
+local H_ADDROW  = 78     -- 底部「添加 / 保存」按钮行
+local H_RTAIL   = 200    -- 规则页底部「默认路由 / 别名 / 场景」只读块的余量
+local H_TABLE   = { overview = 590, ask = 540 }   -- 固定内容页签
+local H_EDIT    = { provider = 476, rule = 700 }  -- 单卡编辑视图
+
+local function wantHeight()
+    local h
+    if view.tab == "providers" then
+        if view.editing then
+            h = H_CHROME + H_EDIT.provider
+        else
+            h = H_CHROME + H_SECTION + #providerList() * H_PROW + H_ADDROW
+        end
+    elseif view.tab == "rules" then
+        if view.ruleEditing then
+            h = H_CHROME + H_EDIT.rule
+        else
+            h = H_CHROME + H_SECTION + #ruleList() * H_RROW + H_ADDROW + H_RTAIL
+        end
+    elseif view.tab == "logs" then
+        h = H_CHROME + H_SECTION + math.max(1, #(view.logs or {})) * H_LROW
+    elseif view.tab == "ask" then
+        h = H_TABLE.ask
+    else
+        h = H_TABLE.overview
+    end
+    local cap = (view.maxH and view.maxH > 0) and view.maxH or 900
+    return math.min(h, cap)
+end
+
 function render()
     local body
     local noScroll = false  -- 编辑态直接平铺，不进 scroll（避免空白处还出现滚动条）
@@ -1261,7 +1299,7 @@ function render()
     end
     -- 不再强制 height = maxH：那会把面板永远撑到满屏（2 行 provider 也 1300px 高）。
     -- 让宿主持有尺寸、内容决定高度；内容超出屏幕时由 bodyContainer 的 flexGrow 滚动兜住。
-    panel.render(ui.column({ gap = 6, padding = 10 }, {
+    panel.render(ui.column({ gap = 6, padding = 10, height = wantHeight() }, {
         header(),
         tabBar(),
         ui.separator({}),

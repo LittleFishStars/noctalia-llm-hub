@@ -16,7 +16,7 @@
 id = "ylxc/llm-hub"
 name = "LLM Hub"
 name_key = "plugin.name"
-version = "1.2.7"
+version = "1.2.8"
 plugin_api = 26
 author = "ylxc"
 license = "MIT"
@@ -118,10 +118,10 @@ entry = "bar.luau"
 id = "console"
 entry = "panel.luau"
 width = 660
-# 面板尺寸是宿主持有的（无运行时改尺寸 API），而且宿主的实际做法是「按当前内容高度定窗口高度」
-# （实测：Provider 列表页 622 逻辑高、日志页 947 逻辑高，同一份 660 宽）。所以这里只给一个
-# 合理的初值，真正的自适应交给内容：短页签就矮、长页签就高，超出屏幕才滚动。
-height = 720
+# 面板尺寸由宿主决定，但「窗口高度 = 根 column 的 height」且以这里为上限（实测：写 400 就只有 400）。
+# 所以这里给一个足够大的上限，实际高度由 panel.luau 的 wantHeight() 按当前页签内容算，
+# 让短页签矮、长页签高，只有内容真的超出屏幕才滚动。
+height = 1400
 placement = "floating"
 position = "center"
 
